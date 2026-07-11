@@ -16,6 +16,6 @@ uniform float ambientStrength;
 void main()
 {
     finalColor = vec4(colDiffuse.rgb + ambientColor * ambientStrength, fragColor.a);
-    finalColor *= ((max(dot(fragNormal, normalize(lightDir)), 0.0) * 0.5) + 0.5);
+    finalColor.xyz *= ((max(dot(fragNormal, normalize(lightDir)), 0.0) * 0.5) + 0.5);
 }
 
