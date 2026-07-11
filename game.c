@@ -11,19 +11,15 @@
 #define u64 uint64_t
 #define f32 float
 
+#define true 1
+#define false 0
+
 void camera_init_default(Camera* camera) {
   camera->position = (Vector3){-0.0f, 8.0f, 5.0f};
   camera->target   = (Vector3){0.0f, 0.0f,  0.0f};
   camera->up       = (Vector3){0.0f, 1.0f,  0.0f};
   camera->fovy     = 90.0f;
   camera->projection = CAMERA_PERSPECTIVE;
-}
-
-void draw_level() {
-  // DrawGrid(40, 1.0f);
-  DrawPlane((Vector3){0.0f, 0.1f,   0.0f}, (Vector2){40.0f, 40.0f}, DARKGRAY);
-  DrawCube((Vector3){ 0.0f, 0.5f, -10.0f}, 20.f, 1.0f, 1.0, BROWN);
-  DrawCube((Vector3){10.0f, 0.5f,   0.0f}, 1.0f, 1.0f, 20.0, BROWN);
 }
 
 b3Vec3 vec3_rl_to_b3v(Vector3 v) {
@@ -65,6 +61,13 @@ bool plane_result_fn(b3ShapeId shape, const b3PlaneResult* results, int plane_co
   }
   return true;
 }
+
+typedef enum {
+  GAME_MODE_GAME,
+  GAME_MODE_EDITOR,
+} GameMode;
+GameMode game_mode   = GAME_MODE_GAME;
+u8       game_paused = false;
 
 int main(void) {
   InitWindow(1280, 720, "test");
@@ -158,36 +161,40 @@ int main(void) {
     b3CreateHullShape(wall_2_body_id, &shape_def, &box.base);
   }
 
-  CameraMode camera_mode = CAMERA_CUSTOM;
-
   while (!WindowShouldClose()) {
     f32 dt = GetFrameTime();
 
-    b3World_Step(world_id, dt, 4);
+    if (!game_paused) b3World_Step(world_id, dt, 4);
 
     if (IsKeyPressed(KEY_F1)) {
-      camera_mode = CAMERA_FREE;
+      game_mode = GAME_MODE_EDITOR;
     }
     if (IsKeyPressed(KEY_F2)) {
-      camera_mode = CAMERA_CUSTOM;
+      game_mode = GAME_MODE_GAME;
+      EnableCursor();
+    }
+    if (IsKeyPressed(KEY_F5)) {
+      game_paused = !game_paused;
     }
 
-    if (camera_mode == CAMERA_CUSTOM) {
+    if (!game_paused) {
       b3Vec3 player_acceleration = {0};
-      if (IsKeyDown(KEY_A)) {
-        player_acceleration.x -= 1.0f;
-      }
-      if (IsKeyDown(KEY_D)) {
-        player_acceleration.x += 1.0f;
-      }
-      if (IsKeyDown(KEY_W)) {
-        player_acceleration.z += 1.0f;
-      }
-      if (IsKeyDown(KEY_S)) {
-        player_acceleration.z -= 1.0f;
-      }
-      if (IsKeyDown(KEY_SPACE)) {
-        player_acceleration.y += 10.0f;
+      if (game_mode == GAME_MODE_GAME) {
+        if (IsKeyDown(KEY_A)) {
+          player_acceleration.x -= 1.0f;
+        }
+        if (IsKeyDown(KEY_D)) {
+          player_acceleration.x += 1.0f;
+        }
+        if (IsKeyDown(KEY_W)) {
+          player_acceleration.z += 1.0f;
+        }
+        if (IsKeyDown(KEY_S)) {
+          player_acceleration.z -= 1.0f;
+        }
+        if (IsKeyDown(KEY_SPACE)) {
+          player_acceleration.y += 10.0f;
+        }
       }
 
       player_acceleration = b3MulSV(player_speed, player_acceleration);
@@ -222,21 +229,29 @@ int main(void) {
       b3Body_SetLinearVelocity(player_body_id, player_velocity);
     }
 
-    {
+    if (game_mode == GAME_MODE_GAME) {
       Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
       game_camera.position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
       game_camera.target = player_position;
-      UpdateCamera(&free_camera, camera_mode);
+    }
+    if (game_mode == GAME_MODE_EDITOR) {
+      if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        UpdateCamera(&free_camera, CAMERA_FREE);
+        DisableCursor();
+      }
+      if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        EnableCursor();
+      }
     }
 
+    Camera camera;
+    switch (game_mode) {
+      case GAME_MODE_GAME:   camera = game_camera; break;
+      case GAME_MODE_EDITOR: camera = free_camera; break;
+    }
     BeginDrawing();
     ClearBackground(BLACK);
-
-      if (camera_mode == CAMERA_CUSTOM) {
-        BeginMode3D(game_camera);
-      } else {
-        BeginMode3D(free_camera);
-      }
+      BeginMode3D(camera);
 
         DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
         DrawCube((Vector3){0.0f, 1.5f, 0.0f}, 0.1f, 2.0f, 0.1f, GREEN);
@@ -261,12 +276,12 @@ int main(void) {
         Vector3 wall_2_scale = (Vector3){1.0f, 1.0f, 1.0f};
         DrawModelEx(wall_model, wall_2_position, wall_rotation_axis, 90.0f, wall_2_scale, BROWN);
 
-        // draw_level();
       EndMode3D();
 
     DrawText(TextFormat("player_pos: x: %f y: %f z: %f", player_position.x, player_position.y, player_position.z), 10, 10, 32, RED);
     DrawText(TextFormat("player_rotaiton: axis: x: %f y: %f z: %f angle: %f", axis.x, axis.y, axis.z, angle), 10, 42, 32, RED);
     DrawText(TextFormat("controller: %s", IsGamepadAvailable(0) ? "on" : "off"), 10, 72, 32, RED);
+    DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, 102, 32, RED);
 
     EndDrawing();
   }
