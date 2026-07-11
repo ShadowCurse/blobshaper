@@ -69,6 +69,24 @@ bool plane_result_fn(b3ShapeId shape, const b3PlaneResult* results, int plane_co
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
+  SetTargetFPS(60);
+
+  Shader mesh_shader = LoadShader(
+      "shaders/mesh_vert.glsl",
+      "shaders/mesh_frag.glsl"
+  );
+  int loc = GetShaderLocation(mesh_shader, "lightPos");
+  SetShaderValue(mesh_shader, loc, &(Vector3){0.0f, 10.0f, 10.0f}, SHADER_UNIFORM_VEC3);
+
+  loc = GetShaderLocation(mesh_shader, "lightDir");
+  SetShaderValue(mesh_shader, loc, &(Vector3){0.0f, 1.0f, -1.0f}, SHADER_UNIFORM_VEC3);
+
+  loc = GetShaderLocation(mesh_shader, "ambientColor");
+  SetShaderValue(mesh_shader, loc, &(Vector3){1.0f, 1.0f, 1.0f}, SHADER_UNIFORM_VEC3);
+
+  loc = GetShaderLocation(mesh_shader, "ambientStrength");
+  f32 v = 0.1f;
+  SetShaderValue(mesh_shader, loc, &v, SHADER_ATTRIB_FLOAT);
 
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
@@ -82,18 +100,19 @@ int main(void) {
   // plyer
   f32   player_speed    = 8.0f;
   f32   player_friction = 1.0f;
-  Mesh  player_mesh  = GenMeshSphere(0.5, 32, 32);
+  Mesh  player_mesh  = GenMeshSphere(0.5f, 32, 32);
   Model player_model = LoadModelFromMesh(player_mesh);
+  player_model.materials[0].shader = mesh_shader;
 
   b3BodyId player_body_id;
   {
     b3BodyDef player_body_def = b3DefaultBodyDef();
-    player_body_def.type     = b3_kinematicBody;//b3_dynamicBody
+    player_body_def.type     = b3_kinematicBody;
     player_body_def.position = (b3Vec3){0.0f, 3.0f, 0.0f};
-    player_body_def.rotation = b3MakeQuatFromAxisAngle((b3Vec3){1.0f, 0.0, 0.0}, 1.1);
+    player_body_def.rotation = b3MakeQuatFromAxisAngle((b3Vec3){1.0f, 0.0f, 0.0f}, 1.1);
     player_body_id = b3CreateBody(world_id, &player_body_def);
 
-    b3BoxHull player_box =  b3MakeCubeHull(0.5f);// b3MakeBoxHull(0.5f, 0.5f, 0.5f);
+    b3BoxHull player_box =  b3MakeCubeHull(0.5f);
     b3ShapeDef shape_def = b3DefaultShapeDef();
     shape_def.density = 1.0f;
     shape_def.baseMaterial.friction = 0.3f;
@@ -101,6 +120,10 @@ int main(void) {
   }
 
   // level
+  Mesh  wall_mesh  = GenMeshCube(40.0f, 1.0f, 1.0f);
+  Model wall_model = LoadModelFromMesh(wall_mesh);
+  wall_model.materials[0].shader = mesh_shader;
+
   b3BodyId floor_body_id;
   b3BodyId wall_1_body_id;
   b3BodyId wall_2_body_id;
@@ -229,11 +252,14 @@ int main(void) {
         Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
         DrawCube(floor_position, 40.0f, 1.0f, 40.0f, GRAY);
 
+        Vector3 wall_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 wall_1_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_1_body_id));
-        DrawCube(wall_1_position, 40.0f, 1.0f, 1.0f, BROWN);
+        Vector3 wall_1_scale = (Vector3){1.0f, 1.0f, 1.0f};
+        DrawModelEx(wall_model, wall_1_position, wall_rotation_axis , 0.0f, wall_1_scale, BROWN);
 
         Vector3 wall_2_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_2_body_id));
-        DrawCube(wall_2_position, 1.0f, 1.0f, 40.0f, BROWN);
+        Vector3 wall_2_scale = (Vector3){1.0f, 1.0f, 1.0f};
+        DrawModelEx(wall_model, wall_2_position, wall_rotation_axis, 90.0f, wall_2_scale, BROWN);
 
         // draw_level();
       EndMode3D();
