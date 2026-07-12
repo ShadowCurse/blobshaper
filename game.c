@@ -263,8 +263,8 @@ int main(void) {
   light_camera.position = (Vector3){-3.0f, 8.0f, 3.0f};
   light_camera.target   = (Vector3){0.0f, 0.0f,  0.0f};
   light_camera.up       = (Vector3){0.0f, 1.0f,  0.0f};
-  light_camera.fovy     = 90.0f;
-  light_camera.projection = CAMERA_PERSPECTIVE;
+  light_camera.fovy     = 20.0f;
+  light_camera.projection = CAMERA_ORTHOGRAPHIC;
 
   Shader mesh_shader = LoadShader(
       "shaders/mesh_vert.glsl",
@@ -498,28 +498,26 @@ int main(void) {
       case GAME_MODE_EDITOR: camera = free_camera; break;
     }
 
-    Matrix lightView = { 0 };
-    Matrix lightProj = { 0 };
-    Matrix lightViewProj = { 0 };
+    Matrix light_view = {0};
+    Matrix light_proj = {0};
+    Matrix light_view_proj = {0};
 
     BeginTextureMode(depth_texture);
       BeginShaderMode(depth_shader);
         ClearBackground(WHITE);
         BeginMode3D(light_camera);
-          lightView = rlGetMatrixModelview();
-          lightProj = rlGetMatrixProjection();
+          light_view = rlGetMatrixModelview();
+          light_proj = rlGetMatrixProjection();
           draw_scene();
         EndMode3D();
       EndShaderMode();
     EndTextureMode();
 
-    lightViewProj = MatrixMultiply(lightView, lightProj);
+    light_view_proj = MatrixMultiply(light_view, light_proj);
+    SetShaderValueMatrix(mesh_shader, light_vp_loc, light_view_proj);
 
     BeginDrawing();
       ClearBackground(BLACK);
-
-      SetShaderValueMatrix(mesh_shader, light_vp_loc, lightViewProj);
-      rlEnableShader(mesh_shader.id);
 
       i32 texture_slot = 10;
       rlActiveTextureSlot(texture_slot);
@@ -546,7 +544,6 @@ int main(void) {
           b3Shape_AreSensorEventsEnabled(player_sensor_id) ? "yes" : "no"),
         10, text_offset, 32, RED);
       text_offset += 32;
-
 
     EndDrawing();
   }

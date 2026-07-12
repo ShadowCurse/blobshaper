@@ -19,9 +19,9 @@ uniform mat4 matProjection;
 uniform mat4 light_vp;
 
 void main() {
-    frag_position = vec3(matModel * vec4(vertexPosition, 1.0));
-    frag_normal   = normalize(transpose(inverse(mat3(matModel))) * vertexNormal);
-    frag_light_space_position = light_vp * vec4(frag_position, 1.0);
-    gl_Position = matProjection * matView * vec4(frag_position, 1.0);
+  frag_position = vec3(matModel * vec4(vertexPosition, 1.0));
+  frag_normal   = normalize(transpose(inverse(mat3(matModel))) * vertexNormal);
+  frag_light_space_position = light_vp * vec4(frag_position, 1.0);
+  gl_Position = matProjection * matView * vec4(frag_position, 1.0);
 }
 
