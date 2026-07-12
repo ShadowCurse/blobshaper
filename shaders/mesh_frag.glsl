@@ -1,21 +1,61 @@
-#version 330
+#version 300 es
+precision highp float;
 
-out vec4 finalColor;
+#define WEBGL 0
 
-in vec4 fragColor;
-in vec3 fragPosition;
-in vec3 fragNormal;
+in vec4 frag_color;
+in vec3 frag_position;
+in vec3 frag_normal;
+in vec4 frag_light_space_position;
 
-uniform vec4 colDiffuse;     // The tint passed when drawing
+out vec4 final_color;
 
-uniform vec3 lightPos;
-uniform vec3 lightDir;
-uniform vec3 ambientColor;
-uniform float ambientStrength;
+// raylib inputs
+uniform vec4  colDiffuse;
 
-void main()
-{
-    finalColor = vec4(colDiffuse.rgb + ambientColor * ambientStrength, fragColor.a);
-    finalColor.xyz *= ((max(dot(fragNormal, normalize(lightDir)), 0.0) * 0.5) + 0.5);
+uniform vec3      light_pos;
+uniform sampler2D shadow_map;
+
+float direct_shadow(vec4 light_space_position, vec3 normal, vec3 to_light) {
+  vec3 projection = light_space_position.xyz / light_space_position.w;
+  if (1.0 < projection.z)
+    return 0.0;
+
+  vec3 uv = projection * 0.5 + 0.5;
+#if WEBGL
+  if (uv.x < -1.0 || 1.0 < uv.x ||
+      uv.y < -1.0 || 1.0 < uv.y)
+    return 0.0;
+#endif
+
+  float curr_depth = projection.z;
+  // float bias = max(0.010 * (1.0 - dot(normal, to_light)), 0.002);
+  float bias = max(0.0002 * (1.0 - dot(normal, to_light)), 0.00002) + 0.00001;
+
+  float shadow = 0.0;
+  vec2 texel_size = vec2(1.0) / vec2(textureSize(shadow_map, 0));
+  for(int x = -1; x <= 1; ++x) {
+      for(int y = -1; y <= 1; ++y) {
+          float pcf_depth = texture(shadow_map, uv.xy + vec2(x, y) * texel_size).r;
+#if WEBGL
+          // for some reason on web the depth is from 0.5 to 1.0
+          pcf_depth = (pcf_depth - 0.5) * 2.0;
+#endif
+          shadow += pcf_depth < curr_depth - bias ? 1.0 : 0.0;
+      }
+  }
+  shadow /= 9.0;
+  return shadow;
+}
+
+void main() {
+  vec3 from_light = normalize(frag_position - light_pos);
+
+  final_color = colDiffuse;
+  final_color.xyz *= ((max(dot(frag_normal, -from_light), 0.0) * 0.5) + 0.5);
+
+  float in_shadow = direct_shadow(frag_light_space_position, frag_normal, -from_light);
+  final_color = mix(final_color, vec4(0, 0, 0, 1), in_shadow);
+  final_color += 0.3 * colDiffuse;
 }
 

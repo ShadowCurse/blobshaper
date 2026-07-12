@@ -1,23 +1,27 @@
-#version 330 core
+#version 300 es
+precision highp float;
 
+// raylib inputs
 in vec3 vertexPosition;
 in vec3 vertexNormal;
 in vec4 vertexColor;
 
-out vec4 fragColor;
-out vec3 fragPosition;
-out vec3 fragNormal;
+// out vec4 frag_color;
+out vec3 frag_position;
+out vec3 frag_normal;
+out vec4 frag_light_space_position;
 
+// raylib inputs
 uniform mat4 matModel;
 uniform mat4 matView;
 uniform mat4 matProjection;
 
-void main()
-{
-    fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
-    fragNormal = transpose(inverse(mat3(matModel))) * vertexNormal;
-    fragColor = vertexColor;
+uniform mat4 light_vp;
 
-    gl_Position = matProjection * matView * vec4(fragPosition, 1.0);
+void main() {
+    frag_position = vec3(matModel * vec4(vertexPosition, 1.0));
+    frag_normal   = normalize(transpose(inverse(mat3(matModel))) * vertexNormal);
+    frag_light_space_position = light_vp * vec4(frag_position, 1.0);
+    gl_Position = matProjection * matView * vec4(frag_position, 1.0);
 }
 

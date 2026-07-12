@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "raylib.h"
+#include "rlgl.h"
 #include "raymath.h"
 #include "box3d/box3d.h"
 
@@ -9,15 +10,19 @@
 #define u16 uint16_t
 #define u32 uint32_t
 #define u64 uint64_t
+#define i8  int8_t
+#define i16 int16_t
+#define i32 int32_t
+#define i64 int64_t
 #define f32 float
 
 #define true 1
 #define false 0
 
 void camera_init_default(Camera* camera) {
-  camera->position = (Vector3){-0.0f, 8.0f, 5.0f};
-  camera->target   = (Vector3){0.0f, 0.0f,  0.0f};
-  camera->up       = (Vector3){0.0f, 1.0f,  0.0f};
+  camera->position = (Vector3){0.0f, 8.0f, 5.0f};
+  camera->target   = (Vector3){0.0f, 0.0f, 0.0f};
+  camera->up       = (Vector3){0.0f, 1.0f, 0.0f};
   camera->fovy     = 90.0f;
   camera->projection = CAMERA_PERSPECTIVE;
 }
@@ -62,6 +67,41 @@ bool plane_result_fn(b3ShapeId shape, const b3PlaneResult* results, int plane_co
   return true;
 }
 
+#define DEPTH_TEXTURE_RESOLUTION 1024
+RenderTexture2D create_depth_texture(int width, int height) {
+    RenderTexture2D target = {0};
+
+    target.id = rlLoadFramebuffer(); // Load an empty framebuffer
+    target.texture.width = width;
+    target.texture.height = height;
+
+    if (target.id > 0) {
+        rlEnableFramebuffer(target.id);
+
+        // Create depth texture
+        // NOTE: No need a color texture attachment for the shadowmap
+        target.depth.id = rlLoadTextureDepth(width, height, false);
+        target.depth.width = width;
+        target.depth.height = height;
+        target.depth.format = 19; // DEPTH_COMPONENT_24BIT?
+        target.depth.mipmaps = 1;
+
+        // Attach depth texture to FBO
+        rlFramebufferAttach(target.id, target.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+
+        // Check if fbo is complete with attachments (valid)
+        if (rlFramebufferComplete(target.id)) {
+          TRACELOG(LOG_INFO, "FBO: [ID %i] Framebuffer object created successfully", target.id);
+        }
+
+        rlDisableFramebuffer();
+    } else {
+      TRACELOG(LOG_WARNING, "FBO: Framebuffer object can not be created");
+    }
+
+    return target;
+}
+
 typedef enum {
   GAME_MODE_GAME,
   GAME_MODE_EDITOR,
@@ -69,45 +109,86 @@ typedef enum {
 GameMode game_mode   = GAME_MODE_GAME;
 u8       game_paused = false;
 
+b3WorldId world_id;
+Camera    free_camera;
+Camera    game_camera;
+Camera    light_camera;
+
+f32      player_speed    = 8.0f;
+f32      player_friction = 1.0f;
+Model    player_model;
+b3BodyId player_body_id;
+
+Model cube_model;
+
+b3BodyId floor_body_id;
+b3BodyId wall_1_body_id;
+b3BodyId wall_2_body_id;
+
+void draw_scene() {
+  DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
+  DrawCube((Vector3){0.0f, 1.5f, 0.0f}, 0.1f, 2.0f, 0.1f, GREEN);
+  DrawCube((Vector3){0.0f, 0.5f, 1.0f}, 0.1f, 0.1f, 2.0f, BLUE);
+
+  // player
+  Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
+  b3Quat rotation = b3Body_GetRotation(player_body_id);
+  f32 angle;
+  Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
+  DrawModelEx(player_model, player_position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
+
+  Vector3 floor_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+  Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
+  Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
+  DrawModelEx(cube_model, floor_position, floor_rotation_axis , 0.0f, floor_scale, GRAY);
+
+  Vector3 wall_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+  Vector3 wall_1_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_1_body_id));
+  Vector3 wall_1_scale = (Vector3){40.0f, 1.0f, 1.0f};
+  DrawModelEx(cube_model, wall_1_position, wall_rotation_axis , 0.0f, wall_1_scale, BROWN);
+
+  Vector3 wall_2_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_2_body_id));
+  Vector3 wall_2_scale = (Vector3){1.0f, 1.0f, 40.0f};
+  DrawModelEx(cube_model, wall_2_position, wall_rotation_axis, 0.0f, wall_2_scale, BROWN);
+}
+
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
   SetTargetFPS(60);
 
+  camera_init_default(&free_camera);
+  camera_init_default(&game_camera);
+  light_camera.position = (Vector3){-3.0f, 8.0f, 3.0f};// (Vector3){-2.0f, 2.0f, 2.0f};
+  light_camera.target   = (Vector3){0.0f, 0.0f,  0.0f};
+  light_camera.up       = (Vector3){0.0f, 1.0f,  0.0f};
+  light_camera.fovy     = 90.0f;
+  light_camera.projection = CAMERA_PERSPECTIVE;
+
   Shader mesh_shader = LoadShader(
       "shaders/mesh_vert.glsl",
       "shaders/mesh_frag.glsl"
   );
-  int loc = GetShaderLocation(mesh_shader, "lightPos");
-  SetShaderValue(mesh_shader, loc, &(Vector3){0.0f, 10.0f, 10.0f}, SHADER_UNIFORM_VEC3);
+  i32 ligth_pos_loc = GetShaderLocation(mesh_shader, "light_pos");
+  SetShaderValue(mesh_shader, ligth_pos_loc, &light_camera.position, SHADER_UNIFORM_VEC3);
+  i32 shadow_map_loc = GetShaderLocation(mesh_shader, "shadow_map");
+  i32 light_vp_loc   = GetShaderLocation(mesh_shader, "light_vp");
 
-  loc = GetShaderLocation(mesh_shader, "lightDir");
-  SetShaderValue(mesh_shader, loc, &(Vector3){0.0f, 1.0f, -1.0f}, SHADER_UNIFORM_VEC3);
+  Shader depth_shader = LoadShader(
+      "shaders/depth_vert.glsl",
+      "shaders/depth_frag.glsl"
+  );
 
-  loc = GetShaderLocation(mesh_shader, "ambientColor");
-  SetShaderValue(mesh_shader, loc, &(Vector3){1.0f, 1.0f, 1.0f}, SHADER_UNIFORM_VEC3);
 
-  loc = GetShaderLocation(mesh_shader, "ambientStrength");
-  f32 v = 0.1f;
-  SetShaderValue(mesh_shader, loc, &v, SHADER_ATTRIB_FLOAT);
+  RenderTexture2D depth_texture = create_depth_texture(DEPTH_TEXTURE_RESOLUTION, DEPTH_TEXTURE_RESOLUTION);
 
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
-  b3WorldId world_id = b3CreateWorld(&world_def);
+  world_id = b3CreateWorld(&world_def);
 
-  Camera free_camera;
-  Camera game_camera;
-  camera_init_default(&free_camera);
-  camera_init_default(&game_camera);
-
-  // plyer
-  f32   player_speed    = 8.0f;
-  f32   player_friction = 1.0f;
   Mesh  player_mesh  = GenMeshSphere(0.5f, 32, 32);
-  Model player_model = LoadModelFromMesh(player_mesh);
+  player_model = LoadModelFromMesh(player_mesh);
   player_model.materials[0].shader = mesh_shader;
-
-  b3BodyId player_body_id;
   {
     b3BodyDef player_body_def = b3DefaultBodyDef();
     player_body_def.type     = b3_kinematicBody;
@@ -123,13 +204,9 @@ int main(void) {
   }
 
   // level
-  Mesh  wall_mesh  = GenMeshCube(40.0f, 1.0f, 1.0f);
-  Model wall_model = LoadModelFromMesh(wall_mesh);
-  wall_model.materials[0].shader = mesh_shader;
-
-  b3BodyId floor_body_id;
-  b3BodyId wall_1_body_id;
-  b3BodyId wall_2_body_id;
+  Mesh cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
+  cube_model = LoadModelFromMesh(cube_mesh);
+  cube_model.materials[0].shader = mesh_shader;
   {
     b3BodyDef body_def = b3DefaultBodyDef();
     body_def.type     = b3_staticBody;
@@ -249,39 +326,41 @@ int main(void) {
       case GAME_MODE_GAME:   camera = game_camera; break;
       case GAME_MODE_EDITOR: camera = free_camera; break;
     }
+
+    Matrix lightView = { 0 };
+    Matrix lightProj = { 0 };
+    Matrix lightViewProj = { 0 };
+
+    BeginTextureMode(depth_texture);
+      BeginShaderMode(depth_shader);
+        ClearBackground(WHITE);
+        BeginMode3D(light_camera);
+          lightView = rlGetMatrixModelview();
+          lightProj = rlGetMatrixProjection();
+          draw_scene();
+        EndMode3D();
+      EndShaderMode();
+    EndTextureMode();
+
+    lightViewProj = MatrixMultiply(lightView, lightProj);
+
     BeginDrawing();
-    ClearBackground(BLACK);
+      ClearBackground(BLACK);
+
+      SetShaderValueMatrix(mesh_shader, light_vp_loc, lightViewProj);
+      rlEnableShader(mesh_shader.id);
+
+      i32 texture_slot = 10;
+      rlActiveTextureSlot(texture_slot);
+      rlEnableTexture(depth_texture.depth.id);
+      rlSetUniform(shadow_map_loc, &texture_slot, SHADER_UNIFORM_INT, 1);
+
       BeginMode3D(camera);
-
-        DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
-        DrawCube((Vector3){0.0f, 1.5f, 0.0f}, 0.1f, 2.0f, 0.1f, GREEN);
-        DrawCube((Vector3){0.0f, 0.5f, 1.0f}, 0.1f, 0.1f, 2.0f, BLUE);
-
-        // player
-        Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
-        b3Quat rotation = b3Body_GetRotation(player_body_id);
-        f32 angle;
-        Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-        DrawModelEx(player_model, player_position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
-
-        Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
-        DrawCube(floor_position, 40.0f, 1.0f, 40.0f, GRAY);
-
-        Vector3 wall_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
-        Vector3 wall_1_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_1_body_id));
-        Vector3 wall_1_scale = (Vector3){1.0f, 1.0f, 1.0f};
-        DrawModelEx(wall_model, wall_1_position, wall_rotation_axis , 0.0f, wall_1_scale, BROWN);
-
-        Vector3 wall_2_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_2_body_id));
-        Vector3 wall_2_scale = (Vector3){1.0f, 1.0f, 1.0f};
-        DrawModelEx(wall_model, wall_2_position, wall_rotation_axis, 90.0f, wall_2_scale, BROWN);
-
+        draw_scene();
       EndMode3D();
 
-    DrawText(TextFormat("player_pos: x: %f y: %f z: %f", player_position.x, player_position.y, player_position.z), 10, 10, 32, RED);
-    DrawText(TextFormat("player_rotaiton: axis: x: %f y: %f z: %f angle: %f", axis.x, axis.y, axis.z, angle), 10, 42, 32, RED);
-    DrawText(TextFormat("controller: %s", IsGamepadAvailable(0) ? "on" : "off"), 10, 72, 32, RED);
-    DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, 102, 32, RED);
+      DrawText(TextFormat("controller: %s", IsGamepadAvailable(0) ? "on" : "off"), 10, 10, 32, RED);
+      DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, 42, 32, RED);
 
     EndDrawing();
   }

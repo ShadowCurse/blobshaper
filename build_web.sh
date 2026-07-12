@@ -18,4 +18,6 @@ emcc \
   ../game.c \
   ../raylib/src/libraylib.a \
   ../box3d/build_web/src/libbox3d.a \
+  -sFORCE_FILESYSTEM=1 \
+  --embed-file ../shaders@/shaders \
   -o game.html \
