@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <assert.h>
 
 #include "raylib.h"
 #include "rlgl.h"
@@ -15,9 +16,6 @@
 #define i32 int32_t
 #define i64 int64_t
 #define f32 float
-
-#define true 1
-#define false 0
 
 void camera_init_default(Camera* camera) {
   camera->position = (Vector3){0.0f, 8.0f, 5.0f};
@@ -144,13 +142,52 @@ b3BodyId player_gravity_bodies[MAX_GRAVITY_BODIES];
 i32      player_gravity_body_count = 0;
 f32      player_gravity_orbit_distance = 1.1f;
 
-b3BodyId pebble_body_id;
+typedef struct {
+  b3BodyId  body_id;
+  b3ShapeId shape_id;
+  Color     color;
+} Pebble;
+#define MAX_PEBBLES 16
+Pebble pebbles[MAX_PEBBLES];
+i32    pebble_count = 0;
 
 Model cube_model;
 
 b3BodyId floor_body_id;
 b3BodyId wall_1_body_id;
 b3BodyId wall_2_body_id;
+
+
+void pebble_spawn(b3Vec3 position, Color color) {
+  assert(pebble_count < MAX_PEBBLES);
+
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.type     = b3_dynamicBody;
+  body_def.position = (b3Vec3){2.0f, 5.0f, 0.0f};
+  b3BodyId body_id = b3CreateBody(world_id, &body_def);
+
+  b3ShapeDef shape_def = b3DefaultShapeDef();
+  // TODO figure out why this feels so heavy
+  shape_def.density = 0.1f;
+  shape_def.enableSensorEvents = true;
+  b3Sphere sphere = {b3Vec3_zero, 0.25f};
+  b3ShapeId shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+
+  Pebble pebble = {body_id, shape_id, color};
+  pebbles[pebble_count] = pebble;
+  pebble_count += 1;
+}
+
+void pebble_draw(Pebble* pebble) {
+  Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(pebble->body_id));
+  b3Quat rotation = b3Body_GetRotation(pebble->body_id);
+  f32 angle;
+  Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
+  DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, pebble->color);
+
+  Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble->body_id));
+  DrawLine3D(position, Vector3Add(position, velocity), LIME);
+}
 
 void draw_scene() {
   DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
@@ -167,16 +204,8 @@ void draw_scene() {
     DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){4.0f, 4.0f, 4.0f}, MAGENTA);
   }
 
-  // pebble
-  {
-    Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(pebble_body_id));
-    b3Quat rotation = b3Body_GetRotation(pebble_body_id);
-    f32 angle;
-    Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, BLUE);
-
-    Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble_body_id));
-    DrawLine3D(position, Vector3Add(position, velocity), LIME);
+  for (i32 i = 0; i < pebble_count; i += 1) {
+    pebble_draw(pebbles + i);
   }
 
   // level
@@ -256,19 +285,9 @@ int main(void) {
   }
 
   // pebble
-  {
-    b3BodyDef body_def = b3DefaultBodyDef();
-    body_def.type     = b3_dynamicBody;
-    body_def.position = (b3Vec3){2.0f, 5.0f, 0.0f};
-    pebble_body_id = b3CreateBody(world_id, &body_def);
-
-    b3ShapeDef shape_def = b3DefaultShapeDef();
-    // TODO figure out why this feels so heavy
-    shape_def.density = 0.1f;
-    shape_def.enableSensorEvents = true;
-    b3Sphere sphere = {b3Vec3_zero, 0.25f};
-    b3CreateSphereShape(pebble_body_id, &shape_def, &sphere);
-  }
+  pebble_spawn((b3Vec3){2.0f, 5.0f, 0.0f}, MAROON);
+  pebble_spawn((b3Vec3){2.0f, 5.0f, 0.0f}, PURPLE);
+  pebble_spawn((b3Vec3){2.0f, 5.0f, 0.0f}, DARKBROWN);
 
   // level
   Mesh cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
