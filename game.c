@@ -102,6 +102,24 @@ RenderTexture2D create_depth_texture(int width, int height) {
     return target;
 }
 
+void body_id_array_add(b3BodyId* array, i32 capacity, i32* count, b3BodyId item) {
+  if (capacity == *count) {
+    return;
+  }
+  array[*count] = item;
+  *count += 1;
+}
+
+void body_id_array_remove(b3BodyId* array, i32* count, b3BodyId item) {
+  for (i32 i = 0; i < *count; i += 1) {
+    if (B3_ID_EQUALS(array[i], item)) {
+      array[i] = array[*count - 1];
+      *count -= 1;
+      break;
+    }
+  }
+}
+
 typedef enum {
   GAME_MODE_GAME,
   GAME_MODE_EDITOR,
@@ -114,10 +132,19 @@ Camera    free_camera;
 Camera    game_camera;
 Camera    light_camera;
 
-f32      player_speed    = 8.0f;
-f32      player_friction = 1.0f;
-Model    player_model;
-b3BodyId player_body_id;
+f32       player_speed    = 8.0f;
+f32       player_friction = 1.0f;
+Model     player_model;
+b3BodyId  player_body_id;
+b3ShapeId player_sensor_id;
+
+
+#define MAX_GRAVITY_BODIES 16
+b3BodyId player_gravity_bodies[MAX_GRAVITY_BODIES];
+i32      player_gravity_body_count = 0;
+f32      player_gravity_orbit_distance = 1.1f;
+
+b3BodyId pebble_body_id;
 
 Model cube_model;
 
@@ -131,12 +158,28 @@ void draw_scene() {
   DrawCube((Vector3){0.0f, 0.5f, 1.0f}, 0.1f, 0.1f, 2.0f, BLUE);
 
   // player
-  Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
-  b3Quat rotation = b3Body_GetRotation(player_body_id);
-  f32 angle;
-  Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-  DrawModelEx(player_model, player_position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
+  {
+    Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
+    b3Quat rotation = b3Body_GetRotation(player_body_id);
+    f32 angle;
+    Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
+    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
+    DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){4.0f, 4.0f, 4.0f}, MAGENTA);
+  }
 
+  // pebble
+  {
+    Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(pebble_body_id));
+    b3Quat rotation = b3Body_GetRotation(pebble_body_id);
+    f32 angle;
+    Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
+    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, BLUE);
+
+    Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble_body_id));
+    DrawLine3D(position, Vector3Add(position, velocity), LIME);
+  }
+
+  // level
   Vector3 floor_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
   Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
   Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
@@ -159,7 +202,7 @@ int main(void) {
 
   camera_init_default(&free_camera);
   camera_init_default(&game_camera);
-  light_camera.position = (Vector3){-3.0f, 8.0f, 3.0f};// (Vector3){-2.0f, 2.0f, 2.0f};
+  light_camera.position = (Vector3){-3.0f, 8.0f, 3.0f};
   light_camera.target   = (Vector3){0.0f, 0.0f,  0.0f};
   light_camera.up       = (Vector3){0.0f, 1.0f,  0.0f};
   light_camera.fovy     = 90.0f;
@@ -178,29 +221,53 @@ int main(void) {
       "shaders/depth_vert.glsl",
       "shaders/depth_frag.glsl"
   );
-
-
   RenderTexture2D depth_texture = create_depth_texture(DEPTH_TEXTURE_RESOLUTION, DEPTH_TEXTURE_RESOLUTION);
 
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
   world_id = b3CreateWorld(&world_def);
 
-  Mesh  player_mesh  = GenMeshSphere(0.5f, 32, 32);
+  // player
+  Mesh  player_mesh = GenMeshSphere(0.5f, 32, 32);
   player_model = LoadModelFromMesh(player_mesh);
   player_model.materials[0].shader = mesh_shader;
   {
     b3BodyDef player_body_def = b3DefaultBodyDef();
     player_body_def.type     = b3_kinematicBody;
     player_body_def.position = (b3Vec3){0.0f, 3.0f, 0.0f};
-    player_body_def.rotation = b3MakeQuatFromAxisAngle((b3Vec3){1.0f, 0.0f, 0.0f}, 1.1);
     player_body_id = b3CreateBody(world_id, &player_body_def);
 
-    b3BoxHull player_box =  b3MakeCubeHull(0.5f);
+    {
+      b3ShapeDef shape_def = b3DefaultShapeDef();
+      shape_def.density = 1.0f;
+      shape_def.baseMaterial.friction = 0.3f;
+      b3Sphere sphere = {b3Vec3_zero, 0.5f};
+      b3CreateSphereShape(player_body_id, &shape_def, &sphere);
+    }
+
+    {
+      b3ShapeDef shape_def = b3DefaultShapeDef();
+      shape_def.density = 0.0f;
+      shape_def.isSensor = true;
+      shape_def.enableSensorEvents = true;
+      b3Sphere sphere = {b3Vec3_zero, 2.0f};
+      player_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
+    }
+  }
+
+  // pebble
+  {
+    b3BodyDef body_def = b3DefaultBodyDef();
+    body_def.type     = b3_dynamicBody;
+    body_def.position = (b3Vec3){2.0f, 5.0f, 0.0f};
+    pebble_body_id = b3CreateBody(world_id, &body_def);
+
     b3ShapeDef shape_def = b3DefaultShapeDef();
-    shape_def.density = 1.0f;
-    shape_def.baseMaterial.friction = 0.3f;
-    b3CreateHullShape(player_body_id, &shape_def, &player_box.base);
+    // TODO figure out why this feels so heavy
+    shape_def.density = 0.1f;
+    shape_def.enableSensorEvents = true;
+    b3Sphere sphere = {b3Vec3_zero, 0.25f};
+    b3CreateSphereShape(pebble_body_id, &shape_def, &sphere);
   }
 
   // level
@@ -255,8 +322,24 @@ int main(void) {
     }
 
     if (!game_paused) {
+      b3SensorEvents events = b3World_GetSensorEvents(world_id);
+      for (i32 i = 0; i < events.beginCount; i += 1) {
+        b3SensorBeginTouchEvent* event = events.beginEvents + i;
+        if (B3_ID_EQUALS(event->sensorShapeId, player_sensor_id)) {
+          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+          body_id_array_add(player_gravity_bodies, MAX_GRAVITY_BODIES, &player_gravity_body_count, body_id);
+        }
+      }
+      for (i32 i = 0; i < events.endCount; i += 1) {
+        b3SensorEndTouchEvent* event = events.endEvents + i;
+        if (B3_ID_EQUALS(event->sensorShapeId, player_sensor_id)) {
+          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+          body_id_array_remove(player_gravity_bodies, &player_gravity_body_count, body_id);
+        }
+      }
+
       Vector3 camera_forward = Vector3Normalize(Vector3Subtract(game_camera.target,
-                                                                      game_camera.position));
+                                                                game_camera.position));
       Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
       Vector3 player_forward_rl = Vector3CrossProduct((Vector3){0.0f, 1.0f, 0.0f}, player_right_rl);
       b3Vec3  player_right      = vec3_rl_to_b3v(player_right_rl);
@@ -279,6 +362,10 @@ int main(void) {
         if (IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
           player_acceleration.y += 10.0f;
         }
+        if (IsKeyPressed(KEY_Q)) {
+          b3Shape_EnableSensorEvents(player_sensor_id, !b3Shape_AreSensorEventsEnabled(player_sensor_id));
+        }
+
         f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
         player_acceleration = b3Add(player_acceleration, b3MulSV(gamepad_x, player_right));
         f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
@@ -315,6 +402,26 @@ int main(void) {
       player_velocity = b3ClipVector(player_velocity, collision_planes, collision_plane_count);
 
       b3Body_SetLinearVelocity(player_body_id, player_velocity);
+
+      for (i32 i = 0; i < player_gravity_body_count; i += 1) {
+        // TODO maybe improve somehow
+        b3BodyId body_id = player_gravity_bodies[i];
+        b3Vec3 body_position = b3Body_GetPosition(body_id);
+        b3Vec3 to_body       = b3Sub(body_position, player_position);
+        f32 distance         = b3Length(to_body);
+        to_body              = b3Normalize(to_body);
+        b3Vec3 right         = b3Cross(to_body, (b3Vec3){0.0f, 1.0f, 0.0});
+        b3Vec3 to_player     = b3Neg(to_body);
+
+        f32 delta = distance - player_gravity_orbit_distance;
+        delta = delta * delta;
+        delta = delta * delta;
+        delta = delta * delta;
+        delta = delta * delta;
+
+        b3Vec3 v = b3Add(b3MulSV(delta, to_player), b3MulSV(5.0f, right));
+        b3Body_SetLinearVelocity(body_id, v);
+      }
     }
 
     if (game_mode == GAME_MODE_GAME) {
@@ -380,6 +487,13 @@ int main(void) {
       text_offset += 32;
       DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, text_offset, 32, RED);
       text_offset += 32;
+      DrawText(
+        TextFormat(
+          "player sensor enabled: %s",
+          b3Shape_AreSensorEventsEnabled(player_sensor_id) ? "yes" : "no"),
+        10, text_offset, 32, RED);
+      text_offset += 32;
+
 
     EndDrawing();
   }
