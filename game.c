@@ -135,7 +135,7 @@ f32       player_friction = 1.0f;
 Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_sensor_id;
-
+b3Vec3    player_aim;
 
 #define MAX_GRAVITY_BODIES 16
 b3BodyId player_gravity_bodies[MAX_GRAVITY_BODIES];
@@ -151,12 +151,20 @@ typedef struct {
 Pebble pebbles[MAX_PEBBLES];
 i32    pebble_count = 0;
 
+Mesh  cube_mesh;
 Model cube_model;
 
 b3BodyId floor_body_id;
-b3BodyId wall_1_body_id;
-b3BodyId wall_2_body_id;
 
+typedef struct {
+  b3BodyId  body_id;
+  b3ShapeId shape_id;
+  Vector3   scale;
+  Color     color;
+} Wall;
+#define MAX_WALLS 16
+Wall walls[MAX_WALLS];
+i32  wall_count = 0;
 
 void pebble_spawn(b3Vec3 position, Color color) {
   assert(pebble_count < MAX_PEBBLES);
@@ -189,6 +197,30 @@ void pebble_draw(Pebble* pebble) {
   DrawLine3D(position, Vector3Add(position, velocity), LIME);
 }
 
+void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
+  assert(wall_count < MAX_WALLS);
+
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.type      = b3_staticBody;
+  body_def.position  = position;
+  b3BodyId body_id   = b3CreateBody(world_id, &body_def);
+
+  b3BoxHull box        = b3MakeBoxHull(scale.x / 2.0f, scale.y / 2.0f, scale.z / 2.0f);
+  b3ShapeDef shape_def = b3DefaultShapeDef();
+  b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
+
+  Wall wall = {body_id, shape_id, scale, color};
+  walls[wall_count] = wall;
+  wall_count += 1;
+}
+
+void wall_draw(Wall* wall) {
+  Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+  Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(wall->body_id));
+  Vector3 scale = wall->scale;
+  DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, wall->color);
+}
+
 void draw_scene() {
   DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
   DrawCube((Vector3){0.0f, 1.5f, 0.0f}, 0.1f, 2.0f, 0.1f, GREEN);
@@ -214,14 +246,11 @@ void draw_scene() {
   Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
   DrawModelEx(cube_model, floor_position, floor_rotation_axis , 0.0f, floor_scale, GRAY);
 
-  Vector3 wall_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
-  Vector3 wall_1_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_1_body_id));
-  Vector3 wall_1_scale = (Vector3){40.0f, 1.0f, 1.0f};
-  DrawModelEx(cube_model, wall_1_position, wall_rotation_axis , 0.0f, wall_1_scale, BROWN);
+  for (i32 i = 0; i < wall_count; i += 1) {
+    wall_draw(walls + i);
+  }
 
-  Vector3 wall_2_position = vec3_b3p_to_rl(b3Body_GetPosition(wall_2_body_id));
-  Vector3 wall_2_scale = (Vector3){1.0f, 1.0f, 40.0f};
-  DrawModelEx(cube_model, wall_2_position, wall_rotation_axis, 0.0f, wall_2_scale, BROWN);
+  DrawSphere(vec3_b3v_to_rl(player_aim), 0.2, BLUE);
 }
 
 int main(void) {
@@ -290,7 +319,7 @@ int main(void) {
   pebble_spawn((b3Vec3){2.0f, 5.0f, 0.0f}, DARKBROWN);
 
   // level
-  Mesh cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
+  cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
   cube_model = LoadModelFromMesh(cube_mesh);
   cube_model.materials[0].shader = mesh_shader;
   {
@@ -303,26 +332,9 @@ int main(void) {
     b3ShapeDef shape_def = b3DefaultShapeDef();
     b3CreateHullShape(floor_body_id, &shape_def, &box.base);
   }
-  {
-    b3BodyDef body_def = b3DefaultBodyDef();
-    body_def.type     = b3_staticBody;
-    body_def.position = (b3Vec3){0.0f, 1.0f, -20.0f};
-    wall_1_body_id = b3CreateBody(world_id, &body_def);
-
-    b3BoxHull box  = b3MakeBoxHull(20.0f, 0.5f, 0.5f);
-    b3ShapeDef shape_def = b3DefaultShapeDef();
-    b3CreateHullShape(wall_1_body_id , &shape_def, &box.base);
-  }
-  {
-    b3BodyDef body_def = b3DefaultBodyDef();
-    body_def.type     = b3_staticBody;
-    body_def.position = (b3Vec3){20.0f, 1.0f, 0.0f};
-    wall_2_body_id = b3CreateBody(world_id, &body_def);
-
-    b3BoxHull box  = b3MakeBoxHull(0.5f, 0.5f, 20.0f);
-    b3ShapeDef shape_def = b3DefaultShapeDef();
-    b3CreateHullShape(wall_2_body_id, &shape_def, &box.base);
-  }
+  wall_spawn((b3Vec3){0.0f,  5.0f, -20.0f}, (Vector3){40.0f, 10.0f,  1.0f}, BROWN);
+  wall_spawn((b3Vec3){20.0f, 1.0f,   0.0f}, (Vector3){1.0f,   1.0f, 40.0f}, BROWN);
+  wall_spawn((b3Vec3){0.0f,  1.0f,  20.0f}, (Vector3){40.0f,  1.0f,  1.0f}, BROWN);
 
   while (!WindowShouldClose()) {
     f32 dt = GetFrameTime();
@@ -447,6 +459,28 @@ int main(void) {
       Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
       game_camera.position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
       game_camera.target = player_position;
+
+      Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), game_camera);
+      RayCollision collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, MatrixScale(40.0f, 1.0f, 40.0f));
+      f32 closest = 100000000000.0f;
+      if (collision.hit) {
+        player_aim = vec3_rl_to_b3v(collision.point);
+        closest = collision.distance;
+      }
+      for (i32 i = 0; i < wall_count; i += 1) {
+        Wall* wall = walls + i;
+        b3Vec3 position = b3Body_GetPosition(wall->body_id);
+        Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+        Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
+        Matrix m  = MatrixMultiply(ms, mt);
+        collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
+        if (collision.hit) {
+          if (collision.distance < closest) {
+            closest = collision.distance;
+            player_aim = vec3_rl_to_b3v(collision.point);
+          }
+        }
+      }
     }
     if (game_mode == GAME_MODE_EDITOR) {
       if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
