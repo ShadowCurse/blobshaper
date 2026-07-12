@@ -255,23 +255,34 @@ int main(void) {
     }
 
     if (!game_paused) {
+      Vector3 camera_forward = Vector3Normalize(Vector3Subtract(game_camera.target,
+                                                                      game_camera.position));
+      Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
+      Vector3 player_forward_rl = Vector3CrossProduct((Vector3){0.0f, 1.0f, 0.0f}, player_right_rl);
+      b3Vec3  player_right      = vec3_rl_to_b3v(player_right_rl);
+      b3Vec3  player_forward    = vec3_rl_to_b3v(player_forward_rl);
+
       b3Vec3 player_acceleration = {0};
       if (game_mode == GAME_MODE_GAME) {
         if (IsKeyDown(KEY_A)) {
-          player_acceleration.x -= 1.0f;
+          player_acceleration = b3Sub(player_acceleration, player_right);
         }
         if (IsKeyDown(KEY_D)) {
-          player_acceleration.x += 1.0f;
+          player_acceleration = b3Add(player_acceleration, player_right);
         }
         if (IsKeyDown(KEY_W)) {
-          player_acceleration.z += 1.0f;
+          player_acceleration = b3Add(player_acceleration, player_forward);
         }
         if (IsKeyDown(KEY_S)) {
-          player_acceleration.z -= 1.0f;
+          player_acceleration = b3Sub(player_acceleration, player_forward);
         }
-        if (IsKeyDown(KEY_SPACE)) {
+        if (IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
           player_acceleration.y += 10.0f;
         }
+        f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
+        player_acceleration = b3Add(player_acceleration, b3MulSV(gamepad_x, player_right));
+        f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
+        player_acceleration = b3Add(player_acceleration, b3MulSV(-gamepad_y, player_forward));
       }
 
       player_acceleration = b3MulSV(player_speed, player_acceleration);
@@ -359,8 +370,16 @@ int main(void) {
         draw_scene();
       EndMode3D();
 
-      DrawText(TextFormat("controller: %s", IsGamepadAvailable(0) ? "on" : "off"), 10, 10, 32, RED);
-      DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, 42, 32, RED);
+      f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
+      f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
+
+      i32 text_offset = 10;
+      DrawText(TextFormat("controller: %s", IsGamepadAvailable(0) ? "on" : "off"), 10, text_offset, 32, RED);
+      text_offset += 32;
+      DrawText(TextFormat("controller: x: %f, y: %f", gamepad_x, gamepad_y), 10, text_offset, 32, RED);
+      text_offset += 32;
+      DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, text_offset, 32, RED);
+      text_offset += 32;
 
     EndDrawing();
   }
