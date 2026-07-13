@@ -139,6 +139,7 @@ Camera    light_camera;
 
 f32       player_speed    = 8.0f;
 f32       player_friction = 1.0f;
+f32       player_gravity_shoot_strength = 100.0f;
 Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_sensor_id;
@@ -414,6 +415,18 @@ int main(void) {
         player_acceleration = b3Add(player_acceleration, b3MulSV(gamepad_x, player_right));
         f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
         player_acceleration = b3Add(player_acceleration, b3MulSV(-gamepad_y, player_forward));
+
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          if (player_gravity_body_count) {
+            b3BodyId body_id = player_gravity_bodies[0];
+            body_id_array_remove(player_gravity_bodies, &player_gravity_body_count, body_id);
+
+            b3Vec3 body_position = b3Body_GetPosition(body_id);
+            b3Vec3 target_velocity = b3MulSV(player_gravity_shoot_strength,
+                                             b3Normalize(b3Sub(player_aim, body_position)));
+            b3Body_SetLinearVelocity(body_id, target_velocity);
+          }
+        }
       }
 
       player_acceleration = b3MulSV(player_speed, player_acceleration);
