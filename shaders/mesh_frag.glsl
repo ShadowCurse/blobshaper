@@ -21,6 +21,10 @@ float direct_shadow(vec4 light_space_position, vec3 normal, vec3 to_light) {
 
   vec3 uv = projection * 0.5 + 0.5;
 
+  if (uv.x < 0.0 || 1.0 < uv.x ||
+      uv.y < 0.0 || 1.0 < uv.y)
+    return 0.0;
+
   float curr_depth = uv.z;
   float bias = max(0.0002 * (1.0 - dot(normal, to_light)), 0.00002) + 0.00001;
 
