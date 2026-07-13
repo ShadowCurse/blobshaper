@@ -125,6 +125,13 @@ typedef enum {
 GameMode game_mode   = GAME_MODE_GAME;
 u8       game_paused = false;
 
+
+typedef enum {
+  PHYSICS_CATEGORY_PLAYER = 1 << 0,
+  PHYSICS_CATEGORY_LEVEL  = 1 << 1,
+  PHYSICS_CATEGORY_PEBBLE = 1 << 2,
+} PhysicsCategory;
+
 b3WorldId world_id;
 Camera    free_camera;
 Camera    game_camera;
@@ -175,6 +182,8 @@ void pebble_spawn(b3Vec3 position, Color color) {
   b3BodyId body_id = b3CreateBody(world_id, &body_def);
 
   b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_LEVEL | PHYSICS_CATEGORY_PEBBLE;
   // TODO figure out why this feels so heavy
   shape_def.density = 0.1f;
   shape_def.enableSensorEvents = true;
@@ -207,6 +216,8 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
 
   b3BoxHull box        = b3MakeBoxHull(scale.x / 2.0f, scale.y / 2.0f, scale.z / 2.0f);
   b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.filter.categoryBits = PHYSICS_CATEGORY_LEVEL;
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
 
   Wall wall = {body_id, shape_id, scale, color};
@@ -330,6 +341,8 @@ int main(void) {
 
     b3BoxHull box  = b3MakeBoxHull(20.0f, 0.5f, 20.0f);
     b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.filter.categoryBits = PHYSICS_CATEGORY_LEVEL;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
     b3CreateHullShape(floor_body_id, &shape_def, &box.base);
   }
   wall_spawn((b3Vec3){0.0f,  5.0f, -20.0f}, (Vector3){40.0f, 10.0f,  1.0f}, BROWN);
@@ -415,6 +428,8 @@ int main(void) {
 
       b3Capsule capsule = (b3Capsule){{0}, {0}, 0.5f};
       b3QueryFilter filter = b3DefaultQueryFilter();
+      filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
+      filter.maskBits     = PHYSICS_CATEGORY_LEVEL;
       collision_plane_count = 0;
 
       float fraction = b3World_CastMover(world_id,
