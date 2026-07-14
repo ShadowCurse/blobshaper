@@ -149,6 +149,9 @@ typedef enum {
 } GameMode;
 GameMode game_mode   = GAME_MODE_GAME;
 u8       game_paused = false;
+u32      game_slow_mode = 1;
+Camera   free_camera;
+b3Vec3   player_resolved_positon;
 
 typedef enum {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
@@ -159,15 +162,14 @@ typedef enum {
 } PhysicsCategory;
 
 b3WorldId world_id;
-Camera    free_camera;
 Camera    game_camera;
 Camera    light_camera;
 
 Shader mesh_shader;
 Shader depth_shader;
 
-f32       player_speed    = 8.0f;
-f32       player_friction = 1.0f;
+f32       player_speed    = 500.0f;
+f32       player_friction = 20.0f;
 f32       player_gravity_shoot_strength = 100.0f;
 
 f32       player_dash_legth = 5.0f;
@@ -177,8 +179,12 @@ f32       player_dash_dt      = 0.0f;
 i32       player_dash_damage  = 10;
 b3Vec3    player_dash_target;
 
-// debug
-b3Vec3    player_resolved_positon;
+f32       player_slam_up_time   = 0.2f;
+f32       player_slam_hold_time = 0.3f;
+f32       player_slam_down_time = 0.1f;
+f32       player_slam_height    = 2.0f;
+bool      player_in_slam_mode   = false;
+f32       player_slam_accumulate_time = 0.0f;
 
 Model     player_model;
 b3BodyId  player_body_id;
@@ -302,7 +308,7 @@ void player_create() {
   }
 }
 
-b3Vec3 player_get_acceleration(Camera* camera) {
+b3Vec2 player_move(Camera* camera, f32 dt) {
   Vector3 camera_forward = Vector3Normalize(Vector3Subtract(camera->target,
                                                             camera->position));
   Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
@@ -323,21 +329,12 @@ b3Vec3 player_get_acceleration(Camera* camera) {
   if (IsKeyDown(KEY_S)) {
     acceleration = b3Sub(acceleration, player_forward);
   }
-  if (IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
-    acceleration.y += 10.0f;
-  }
-  if (IsKeyPressed(KEY_Q)) {
-    b3Shape_EnableSensorEvents(player_gravity_sensor_id, !b3Shape_AreSensorEventsEnabled(player_gravity_sensor_id));
-  }
 
   f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
   acceleration = b3Add(acceleration, b3MulSV(gamepad_x, player_right));
   f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
   acceleration = b3Add(acceleration, b3MulSV(-gamepad_y, player_forward));
-  return acceleration;
-}
 
-void player_deal_with_physics(b3Vec3 acceleration, f32 dt) {
   b3Vec3 player_position = b3Body_GetPosition(player_body_id);
   b3Vec3 player_velocity = {0};
   if (player_in_dash_mode) {
@@ -351,11 +348,37 @@ void player_deal_with_physics(b3Vec3 acceleration, f32 dt) {
       player_velocity = b3MulSV(v, b3Normalize(b3Sub(player_dash_target, player_position)));
     }
   } else {
-    acceleration = b3MulSV(player_speed, acceleration);
     player_velocity = b3Body_GetLinearVelocity(player_body_id);
-    acceleration = b3Sub(acceleration, b3MulSV(player_friction, player_velocity));
-    player_velocity = b3Add(player_velocity, b3MulSV(dt, acceleration));
-    player_velocity = b3Add(player_velocity, (b3Vec3){0.0, -10.0f * dt, 0.0});
+
+    if (player_in_slam_mode) {
+      player_slam_accumulate_time += dt;
+      if (player_slam_up_time + player_slam_hold_time + player_slam_down_time < player_slam_accumulate_time) {
+        // slam is done
+        player_in_slam_mode = false;
+        player_slam_accumulate_time = 0.0f;
+      } else if (player_slam_up_time + player_slam_hold_time < player_slam_accumulate_time) {
+        f32 slamming_velocity = player_slam_height / player_slam_down_time;
+        player_velocity.y = -slamming_velocity;
+      } else if (player_slam_up_time < player_slam_accumulate_time) {
+        player_velocity.y = 0.0f;
+      } else {
+        f32 rising_velocity = player_slam_height / player_slam_up_time;
+        player_velocity.y = rising_velocity;
+      }
+    } else {
+      acceleration = b3Normalize(acceleration);
+
+      f32 speed = player_speed;
+      if (player_in_slam_mode) {
+        speed /= 3.0f;
+      }
+      acceleration = b3MulSV(speed, acceleration);
+      acceleration.x -= player_friction * player_velocity.x;
+      acceleration.z -= player_friction * player_velocity.z;
+      player_velocity = b3Add(player_velocity, b3MulSV(dt, acceleration));
+      // gravity
+      player_velocity.y -= 10.0f * dt;
+    }
   }
 
   b3Vec3 player_translation = b3MulSV(dt, player_velocity);
@@ -568,26 +591,6 @@ void draw_scene() {
   DrawSphere(vec3_b3v_to_rl(player_aim), 0.2, BLUE);
 }
 
-// f32 dash_shape_cast_fn(
-//   b3ShapeId shape_id,
-//   b3Pos     point,
-//   b3Vec3    normal,
-//   float     fraction,
-//   uint64_t  userMaterialId,
-//   int       triangleIndex,
-//   int       childIndex,
-//   void*     context
-// ) {
-//   b3BodyId body_id = b3Shape_GetBody(shape_id);
-//   // if (B3_ID_EQUALS(body_id, enemy_body_id)) {
-//   //   printf("dash encountered enemy\n");
-//   //   return -1.0f;
-//   // } else {
-//   //   printf("dash encountered unknown body\n");
-//     return 1.0f;
-//   // }
-// }
-
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
@@ -652,6 +655,7 @@ int main(void) {
 
   while (!WindowShouldClose()) {
     f32 dt = GetFrameTime();
+    dt /= (f32)game_slow_mode;
 
     if (!game_paused) b3World_Step(world_id, dt, 4);
 
@@ -661,6 +665,15 @@ int main(void) {
     if (IsKeyPressed(KEY_F2)) {
       game_mode = GAME_MODE_GAME;
       EnableCursor();
+    }
+    if (IsKeyPressed(KEY_F3)) {
+      game_slow_mode += 1;
+    }
+    if (IsKeyPressed(KEY_F4)) {
+      game_slow_mode -= 1;
+      if (game_slow_mode == 0) {
+        game_slow_mode = 1;
+      }
     }
     if (IsKeyPressed(KEY_F5)) {
       game_paused = !game_paused;
@@ -713,9 +726,16 @@ int main(void) {
         }
       }
 
-      b3Vec3 player_acceleration = {0};
       if (game_mode == GAME_MODE_GAME) {
-        player_acceleration = player_get_acceleration(&game_camera);
+
+        if (!player_in_slam_mode && (IsKeyPressed(KEY_SPACE) ||
+                                         IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))) {
+          player_in_slam_mode = true;
+        }
+
+        if (IsKeyPressed(KEY_Q)) {
+          b3Shape_EnableSensorEvents(player_gravity_sensor_id, !b3Shape_AreSensorEventsEnabled(player_gravity_sensor_id));
+        }
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           if (player_gravity_body_count) {
@@ -735,33 +755,14 @@ int main(void) {
                                              b3Normalize(b3Sub(player_aim, player_position)));
             b3Vec3 final_position = b3Add(player_position, dash);
             player_dash_target = final_position;
-
-            // This works, but maybe not very useful for the dash
-            // b3Vec3 proxy_points = {0};
-            // b3ShapeProxy proxy;
-            // proxy.points = &proxy_points;
-            // proxy.count  = 1;
-            // proxy.radius = 0.5f;
-            //
-            // b3QueryFilter filter = b3DefaultQueryFilter();
-            // filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
-            // filter.maskBits     = PHYSICS_CATEGORY_LEVEL |
-            //                       PHYSICS_CATEGORY_ENEMY;
-            // b3World_CastShape(world_id, (b3Pos){player_position.x, player_position.y, player_position.z},
-            //                   &proxy, dash, filter, dash_shape_cast_fn, NULL);
         }
+        player_move(&game_camera, dt);
+
+        b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+        player_update_gravity_objects_velocities(player_position);
+        camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
+        player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
       }
-
-      player_deal_with_physics(player_acceleration, dt);
-
-      b3Vec3 player_position = b3Body_GetPosition(player_body_id);
-      player_update_gravity_objects_velocities(player_position);
-    }
-
-    if (game_mode == GAME_MODE_GAME) {
-      Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
-      camera_follow_player(&game_camera, player_position);
-      player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
     }
     if (game_mode == GAME_MODE_EDITOR) {
       if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
@@ -819,6 +820,8 @@ int main(void) {
       text_offset += 32;
       DrawText(TextFormat("paused: %s", game_paused ? "yes" : "no"), 10, text_offset, 32, RED);
       text_offset += 32;
+      DrawText(TextFormat("slow_mode: x%u", game_slow_mode), 10, text_offset, 32, RED);
+      text_offset += 32;
       DrawText(
         TextFormat(
           "player sensor enabled: %s",
@@ -826,6 +829,8 @@ int main(void) {
         10, text_offset, 32, RED);
       text_offset += 32;
       DrawText(TextFormat("player in dash: %s", player_in_dash_mode ? "yes" : "no"), 10, text_offset, 32, RED);
+      text_offset += 32;
+      DrawText(TextFormat("player in slam: %s", player_in_slam_mode ? "yes" : "no"), 10, text_offset, 32, RED);
       text_offset += 32;
 
     EndDrawing();
