@@ -197,8 +197,8 @@ typedef struct {
   Color     color;
 } Pebble;
 #define MAX_PEBBLES 16
-Pebble pebbles[MAX_PEBBLES];
-i32    pebble_count = 0;
+FixedArrayImpl(Pebble, MAX_PEBBLES);
+FixedArray(Pebble) pebbles;
 
 Mesh  cube_mesh;
 Model cube_model;
@@ -411,8 +411,6 @@ void player_update_gravity_objects_velocities(b3Vec3 player_position) {
 }
 
 void pebble_spawn(b3Vec3 position, Color color) {
-  assert(pebble_count < MAX_PEBBLES);
-
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type     = b3_dynamicBody;
   body_def.position = position;
@@ -431,8 +429,7 @@ void pebble_spawn(b3Vec3 position, Color color) {
   b3ShapeId shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
 
   Pebble pebble = {body_id, shape_id, color};
-  pebbles[pebble_count] = pebble;
-  pebble_count += 1;
+  fixed_array_add(pebbles, pebble);
 }
 
 void pebble_draw(Pebble* pebble) {
@@ -525,8 +522,8 @@ void draw_scene() {
                      DARKGREEN);
   }
 
-  for (i32 i = 0; i < pebble_count; i += 1) {
-    pebble_draw(pebbles + i);
+  for (i32 i = 0; i < pebbles.count; i += 1) {
+    pebble_draw(pebbles.items + i);
   }
 
   // level
