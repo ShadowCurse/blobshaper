@@ -148,6 +148,9 @@ bool      player_in_dash_mode = false;
 f32       player_dash_dt      = 0.0f;
 b3Vec3    player_dash_target;
 
+// debug
+b3Vec3    player_resolved_positon;
+
 Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_sensor_id;
@@ -183,6 +186,145 @@ typedef struct {
 #define MAX_WALLS 16
 Wall walls[MAX_WALLS];
 i32  wall_count = 0;
+
+void camera_follow_player(Camera* camera, Vector3 player_position) {
+  camera->position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
+  camera->target = player_position;
+}
+
+Vector3 camera_world_ray_cast(Camera camera) {
+  Vector3 result = {0};
+  Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), camera);
+  RayCollision collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, MatrixScale(40.0f, 1.0f, 40.0f));
+  f32 closest = 100000000000.0f;
+  if (collision.hit) {
+    result = collision.point;
+    closest = collision.distance;
+  }
+  for (i32 i = 0; i < wall_count; i += 1) {
+    Wall* wall = walls + i;
+    b3Vec3 position = b3Body_GetPosition(wall->body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
+    Matrix m  = MatrixMultiply(ms, mt);
+    collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = collision.point;
+      }
+    }
+  }
+  return result;
+}
+
+b3Vec3 player_get_acceleration(Camera* camera) {
+  Vector3 camera_forward = Vector3Normalize(Vector3Subtract(camera->target,
+                                                            camera->position));
+  Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
+  Vector3 player_forward_rl = Vector3CrossProduct((Vector3){0.0f, 1.0f, 0.0f}, player_right_rl);
+  b3Vec3  player_right      = vec3_rl_to_b3v(player_right_rl);
+  b3Vec3  player_forward    = vec3_rl_to_b3v(player_forward_rl);
+
+  b3Vec3 acceleration = {0};
+  if (IsKeyDown(KEY_A)) {
+    acceleration = b3Sub(acceleration, player_right);
+  }
+  if (IsKeyDown(KEY_D)) {
+    acceleration = b3Add(acceleration, player_right);
+  }
+  if (IsKeyDown(KEY_W)) {
+    acceleration = b3Add(acceleration, player_forward);
+  }
+  if (IsKeyDown(KEY_S)) {
+    acceleration = b3Sub(acceleration, player_forward);
+  }
+  if (IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
+    acceleration.y += 10.0f;
+  }
+  if (IsKeyPressed(KEY_Q)) {
+    b3Shape_EnableSensorEvents(player_sensor_id, !b3Shape_AreSensorEventsEnabled(player_sensor_id));
+  }
+
+  f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
+  acceleration = b3Add(acceleration, b3MulSV(gamepad_x, player_right));
+  f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
+  acceleration = b3Add(acceleration, b3MulSV(-gamepad_y, player_forward));
+  return acceleration;
+}
+
+void player_deal_with_physics(b3Vec3 acceleration, f32 dt) {
+  b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+  b3Vec3 player_velocity = {0};
+  if (player_in_dash_mode) {
+    player_dash_dt += dt;
+    if (player_dash_time < player_dash_dt) {
+      player_in_dash_mode = false;
+      player_dash_dt = 0.0f;
+      player_velocity = (b3Vec3){0};
+    } else {
+      f32 v = player_dash_legth / player_dash_time;
+      player_velocity = b3MulSV(v, b3Normalize(b3Sub(player_dash_target, player_position)));
+    }
+  } else {
+    acceleration = b3MulSV(player_speed, acceleration);
+    player_velocity = b3Body_GetLinearVelocity(player_body_id);
+    acceleration = b3Sub(acceleration, b3MulSV(player_friction, player_velocity));
+    player_velocity = b3Add(player_velocity, b3MulSV(dt, acceleration));
+    player_velocity = b3Add(player_velocity, (b3Vec3){0.0, -10.0f * dt, 0.0});
+  }
+
+  b3Vec3 player_translation = b3MulSV(dt, player_velocity);
+
+  b3Capsule capsule = (b3Capsule){{0}, {0}, 0.5f};
+  b3QueryFilter filter = b3DefaultQueryFilter();
+  filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
+  filter.maskBits     = PHYSICS_CATEGORY_LEVEL |
+                        PHYSICS_CATEGORY_ENEMY;
+  collision_plane_count = 0;
+
+  float fraction = b3World_CastMover(world_id,
+                                     player_position,
+                                     &capsule,
+                                     player_translation,
+                                     filter,
+                                     NULL,
+                                     NULL);
+  b3Vec3 safe_delta = b3MulSV(fraction, player_translation);
+  capsule.center1 = b3Add(capsule.center1, safe_delta);
+  capsule.center2 = b3Add(capsule.center2, safe_delta);
+
+  b3World_CollideMover(world_id, player_position, &capsule, filter, plane_result_fn, NULL);
+
+  // TODO figure out how to avoid getting player into the collidiers
+  b3PlaneSolverResult result = b3SolvePlanes(b3Vec3_zero, collision_planes, collision_plane_count);
+  player_resolved_positon = b3Add(player_position, result.delta);
+
+  player_velocity = b3ClipVector(player_velocity, collision_planes, collision_plane_count);
+  b3Body_SetLinearVelocity(player_body_id, player_velocity);
+}
+
+void player_update_gravity_objects_velocities(b3Vec3 player_position) {
+  for (i32 i = 0; i < player_gravity_body_count; i += 1) {
+    // TODO maybe improve somehow
+    b3BodyId body_id = player_gravity_bodies[i];
+    b3Vec3 body_position = b3Body_GetPosition(body_id);
+    b3Vec3 to_body       = b3Sub(body_position, player_position);
+    f32 distance         = b3Length(to_body);
+    to_body              = b3Normalize(to_body);
+    b3Vec3 right         = b3Cross(to_body, (b3Vec3){0.0f, 1.0f, 0.0});
+    b3Vec3 to_player     = b3Neg(to_body);
+
+    f32 delta = distance - player_gravity_orbit_distance;
+    delta = delta * delta;
+    delta = delta * delta;
+    delta = delta * delta;
+    delta = delta * delta;
+
+    b3Vec3 v = b3Add(b3MulSV(delta, to_player), b3MulSV(5.0f, right));
+    b3Body_SetLinearVelocity(body_id, v);
+  }
+}
 
 void pebble_spawn(b3Vec3 position, Color color) {
   assert(pebble_count < MAX_PEBBLES);
@@ -257,10 +399,17 @@ void draw_scene() {
     b3Quat rotation = b3Body_GetRotation(player_body_id);
     f32 angle;
     Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
+    DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
     DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){4.0f, 4.0f, 4.0f}, MAGENTA);
 
     DrawLine3D(position, vec3_b3v_to_rl(player_dash_target), RED);
+
+    DrawModelWiresEx(player_model,
+                     vec3_b3p_to_rl(player_resolved_positon),
+                     axis,
+                     rad_to_degree(angle),
+                     (Vector3){1.0f, 1.0f, 1.0f},
+                     DARKGREEN);
   }
 
   for (i32 i = 0; i < pebble_count; i += 1) {
@@ -445,38 +594,9 @@ int main(void) {
         }
       }
 
-      Vector3 camera_forward = Vector3Normalize(Vector3Subtract(game_camera.target,
-                                                                game_camera.position));
-      Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
-      Vector3 player_forward_rl = Vector3CrossProduct((Vector3){0.0f, 1.0f, 0.0f}, player_right_rl);
-      b3Vec3  player_right      = vec3_rl_to_b3v(player_right_rl);
-      b3Vec3  player_forward    = vec3_rl_to_b3v(player_forward_rl);
-
       b3Vec3 player_acceleration = {0};
       if (game_mode == GAME_MODE_GAME) {
-        if (IsKeyDown(KEY_A)) {
-          player_acceleration = b3Sub(player_acceleration, player_right);
-        }
-        if (IsKeyDown(KEY_D)) {
-          player_acceleration = b3Add(player_acceleration, player_right);
-        }
-        if (IsKeyDown(KEY_W)) {
-          player_acceleration = b3Add(player_acceleration, player_forward);
-        }
-        if (IsKeyDown(KEY_S)) {
-          player_acceleration = b3Sub(player_acceleration, player_forward);
-        }
-        if (IsKeyDown(KEY_SPACE) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
-          player_acceleration.y += 10.0f;
-        }
-        if (IsKeyPressed(KEY_Q)) {
-          b3Shape_EnableSensorEvents(player_sensor_id, !b3Shape_AreSensorEventsEnabled(player_sensor_id));
-        }
-
-        f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
-        player_acceleration = b3Add(player_acceleration, b3MulSV(gamepad_x, player_right));
-        f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
-        player_acceleration = b3Add(player_acceleration, b3MulSV(-gamepad_y, player_forward));
+        player_acceleration = player_get_acceleration(&game_camera);
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           if (player_gravity_body_count) {
@@ -513,99 +633,16 @@ int main(void) {
         }
       }
 
+      player_deal_with_physics(player_acceleration, dt);
+
       b3Vec3 player_position = b3Body_GetPosition(player_body_id);
-      b3Vec3 player_velocity = {0};
-      if (player_in_dash_mode) {
-        player_dash_dt += dt;
-        if (player_dash_time < player_dash_dt) {
-          player_in_dash_mode = false;
-          player_dash_dt = 0.0f;
-          player_velocity = (b3Vec3){0};
-        } else {
-          f32 v = player_dash_legth / player_dash_time;
-          player_velocity = b3MulSV(v, b3Normalize(b3Sub(player_dash_target, player_position)));
-        }
-      } else {
-        player_acceleration = b3MulSV(player_speed, player_acceleration);
-        player_velocity = b3Body_GetLinearVelocity(player_body_id);
-        player_acceleration = b3Sub(player_acceleration, b3MulSV(player_friction, player_velocity));
-        player_velocity = b3Add(player_velocity, b3MulSV(dt, player_acceleration));
-        player_velocity = b3Add(player_velocity, (b3Vec3){0.0, -10.0f * dt, 0.0});
-      }
-
-      // physics/collision
-      b3Vec3 player_translation = b3MulSV(dt, player_velocity);
-
-      b3Capsule capsule = (b3Capsule){{0}, {0}, 0.5f};
-      b3QueryFilter filter = b3DefaultQueryFilter();
-      filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
-      filter.maskBits     = PHYSICS_CATEGORY_LEVEL |
-                            PHYSICS_CATEGORY_ENEMY;
-      collision_plane_count = 0;
-
-      float fraction = b3World_CastMover(world_id,
-                                         player_position,
-                                         &capsule,
-                                         player_translation,
-                                         filter,
-                                         NULL,
-                                         NULL);
-      b3Vec3 safe_delta = b3MulSV(fraction, player_translation);
-      capsule.center1 = b3Add(capsule.center1, safe_delta);
-      capsule.center2 = b3Add(capsule.center2, safe_delta);
-
-      b3World_CollideMover(world_id, player_position, &capsule, filter, plane_result_fn, NULL);
-      b3PlaneSolverResult result = b3SolvePlanes(b3Vec3_zero, collision_planes, collision_plane_count);
-      player_velocity = b3ClipVector(player_velocity, collision_planes, collision_plane_count);
-      b3Body_SetLinearVelocity(player_body_id, player_velocity);
-
-      for (i32 i = 0; i < player_gravity_body_count; i += 1) {
-        // TODO maybe improve somehow
-        b3BodyId body_id = player_gravity_bodies[i];
-        b3Vec3 body_position = b3Body_GetPosition(body_id);
-        b3Vec3 to_body       = b3Sub(body_position, player_position);
-        f32 distance         = b3Length(to_body);
-        to_body              = b3Normalize(to_body);
-        b3Vec3 right         = b3Cross(to_body, (b3Vec3){0.0f, 1.0f, 0.0});
-        b3Vec3 to_player     = b3Neg(to_body);
-
-        f32 delta = distance - player_gravity_orbit_distance;
-        delta = delta * delta;
-        delta = delta * delta;
-        delta = delta * delta;
-        delta = delta * delta;
-
-        b3Vec3 v = b3Add(b3MulSV(delta, to_player), b3MulSV(5.0f, right));
-        b3Body_SetLinearVelocity(body_id, v);
-      }
+      player_update_gravity_objects_velocities(player_position);
     }
 
     if (game_mode == GAME_MODE_GAME) {
       Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
-      game_camera.position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
-      game_camera.target = player_position;
-
-      Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), game_camera);
-      RayCollision collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, MatrixScale(40.0f, 1.0f, 40.0f));
-      f32 closest = 100000000000.0f;
-      if (collision.hit) {
-        player_aim = vec3_rl_to_b3v(collision.point);
-        closest = collision.distance;
-      }
-      for (i32 i = 0; i < wall_count; i += 1) {
-        Wall* wall = walls + i;
-        b3Vec3 position = b3Body_GetPosition(wall->body_id);
-        Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-        Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
-        Matrix m  = MatrixMultiply(ms, mt);
-        collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
-        if (collision.hit) {
-          if (collision.distance < closest) {
-            closest = collision.distance;
-            player_aim = vec3_rl_to_b3v(collision.point);
-          }
-        }
-      }
+      camera_follow_player(&game_camera, player_position);
+      player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
     }
     if (game_mode == GAME_MODE_EDITOR) {
       if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
