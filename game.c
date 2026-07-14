@@ -193,8 +193,11 @@ f32      player_gravity_orbit_distance = 1.1f;
 
 typedef struct {
   b3BodyId  body_id;
-  b3ShapeId shape_id;
+  b3ShapeId body_shape_id;
+  b3ShapeId sensor_shape_id;
   Color     color;
+  i32       hp;
+  i32       damage;
 } Pebble;
 #define MAX_PEBBLES 16
 FixedArrayImpl(Pebble, MAX_PEBBLES);
@@ -413,22 +416,44 @@ void player_update_gravity_objects_velocities(b3Vec3 player_position) {
 void pebble_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type     = b3_dynamicBody;
+  body_def.isBullet = true;
   body_def.position = position;
   b3BodyId body_id = b3CreateBody(world_id, &body_def);
 
-  b3ShapeDef shape_def = b3DefaultShapeDef();
-  shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
-  shape_def.filter.maskBits     = PHYSICS_CATEGORY_LEVEL                |
-                                  // PHYSICS_CATEGORY_PLAYER               |
-                                  PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD |
-                                  PHYSICS_CATEGORY_PEBBLE;
-  // TODO figure out why this feels so heavy
-  shape_def.density = 0.1f;
-  shape_def.enableSensorEvents = true;
-  b3Sphere sphere = {b3Vec3_zero, 0.25f};
-  b3ShapeId shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+  b3ShapeId body_shape_id;
+  {
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_LEVEL                |
+                                    PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD |
+                                    PHYSICS_CATEGORY_PEBBLE               |
+                                    PHYSICS_CATEGORY_ENEMY;
+    // TODO figure out why this feels so heavy
+    shape_def.density = 0.1f;
+    shape_def.enableSensorEvents = true;
+    b3Sphere sphere = {b3Vec3_zero, 0.25f};
+    body_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+  }
 
-  Pebble pebble = {body_id, shape_id, color};
+  b3ShapeId sensor_shape_id;
+  {
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.isSensor = true;
+    shape_def.enableSensorEvents  = true;
+    shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
+    b3Sphere sphere = {b3Vec3_zero, 0.25f};
+    sensor_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+  }
+
+  Pebble pebble = {
+    .body_id         = body_id,
+    .body_shape_id   = body_shape_id,
+    .sensor_shape_id = sensor_shape_id,
+    .color           = color,
+    .hp              = 5,
+    .damage          = 1,
+  };
   fixed_array_add(pebbles, pebble);
 }
 
@@ -650,6 +675,9 @@ int main(void) {
           b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
           Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
           enemy->hp -= player_dash_damage;
+          printf("dash hit enemy: %lu. Remaining enemy hp: %d\n",
+                 fixed_array_item_index(enemies, enemy),
+                 enemy->hp);
           if (enemy->hp <= 0) {
             enemy_die(enemy);
           }
@@ -658,6 +686,23 @@ int main(void) {
         if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
           b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
           body_id_array_add(player_gravity_bodies, MAX_GRAVITY_BODIES, &player_gravity_body_count, body_id);
+        }
+
+        for (i32 i = 0; i < pebbles.count; i += 1) {
+          Pebble* pebble = pebbles.items + i;
+          if (B3_ID_EQUALS(event->sensorShapeId, pebble->sensor_shape_id)) {
+            b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+            Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
+            enemy->hp -= pebble->damage;
+            pebble->hp -= 1;
+            printf("pebble hit enemy: %lu. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
+                   fixed_array_item_index(enemies, enemy),
+                   enemy->hp,
+                   pebble->hp);
+            if (enemy->hp <= 0) {
+              enemy_die(enemy);
+            }
+          }
         }
       }
       for (i32 i = 0; i < events.endCount; i += 1) {
