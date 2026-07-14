@@ -212,8 +212,8 @@ typedef struct {
   Color     color;
 } Wall;
 #define MAX_WALLS 16
-Wall walls[MAX_WALLS];
-i32  wall_count = 0;
+FixedArrayImpl(Wall, MAX_WALLS);
+FixedArray(Wall) walls;
 
 typedef struct {
   b3BodyId  body_id;
@@ -242,8 +242,8 @@ Vector3 camera_world_ray_cast(Camera camera) {
     result = collision.point;
     closest = collision.distance;
   }
-  for (i32 i = 0; i < wall_count; i += 1) {
-    Wall* wall = walls + i;
+  for (i32 i = 0; i < walls.count; i += 1) {
+    Wall* wall = walls.items + i;
     b3Vec3 position = b3Body_GetPosition(wall->body_id);
     Matrix mt = MatrixTranslate(position.x, position.y, position.z);
     Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
@@ -447,8 +447,6 @@ void pebble_draw(Pebble* pebble) {
 }
 
 void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
-  assert(wall_count < MAX_WALLS);
-
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
   body_def.position  = position;
@@ -461,8 +459,7 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
 
   Wall wall = {body_id, shape_id, scale, color};
-  walls[wall_count] = wall;
-  wall_count += 1;
+  fixed_array_add(walls, wall);
 }
 
 void wall_draw(Wall* wall) {
@@ -488,7 +485,6 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3ShapeId shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
 
   Enemy enemy = {body_id, shape_id, scale, 20};
-
   fixed_array_add(enemies, enemy);
   b3Body_SetUserData(body_id, enemies.items + enemies.count - 1);
 }
@@ -539,8 +535,8 @@ void draw_scene() {
   Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
   DrawModelEx(cube_model, floor_position, floor_rotation_axis , 0.0f, floor_scale, GRAY);
 
-  for (i32 i = 0; i < wall_count; i += 1) {
-    wall_draw(walls + i);
+  for (i32 i = 0; i < walls.count; i += 1) {
+    wall_draw(walls.items + i);
   }
 
   for (i32 i = 0; i < enemies.count; i += 1) {
