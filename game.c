@@ -156,9 +156,10 @@ b3Vec3   player_resolved_positon;
 typedef enum {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
   PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD = 1 << 1,
-  PHYSICS_CATEGORY_LEVEL                = 1 << 2,
-  PHYSICS_CATEGORY_PEBBLE               = 1 << 3,
-  PHYSICS_CATEGORY_ENEMY                = 1 << 4,
+  PHYSICS_CATEGORY_PLAYER_SLAM_FIELD    = 1 << 2,
+  PHYSICS_CATEGORY_LEVEL                = 1 << 3,
+  PHYSICS_CATEGORY_PEBBLE               = 1 << 4,
+  PHYSICS_CATEGORY_ENEMY                = 1 << 5,
 } PhysicsCategory;
 
 b3WorldId world_id;
@@ -183,13 +184,18 @@ f32       player_slam_up_time   = 0.2f;
 f32       player_slam_hold_time = 0.3f;
 f32       player_slam_down_time = 0.1f;
 f32       player_slam_height    = 2.0f;
+i32       player_slam_damage    = 5;
+f32       player_slam_radius    = 4.0f;
+
 bool      player_in_slam_mode   = false;
 f32       player_slam_accumulate_time = 0.0f;
+bool      player_slam_finished  = false;
 
 Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_dash_sensor_id;
 b3ShapeId player_gravity_sensor_id;
+// b3ShapeId player_slam_sensor_id;
 b3Vec3    player_aim;
 
 #define MAX_GRAVITY_BODIES 16
@@ -268,7 +274,7 @@ Vector3 camera_world_ray_cast(Camera camera) {
   return result;
 }
 
-void player_create() {
+void player_spawn() {
   Mesh player_mesh = GenMeshSphere(0.5f, 32, 32);
   player_model = LoadModelFromMesh(player_mesh);
   player_model.materials[0].shader = mesh_shader;
@@ -281,14 +287,10 @@ void player_create() {
     // dash sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
-      shape_def.density = 1.0f;
       shape_def.baseMaterial.friction = 0.3f;
       shape_def.isSensor = true;
       shape_def.enableSensorEvents = true;
       shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
-      // shape_def.filter.maskBits     = PHYSICS_CATEGORY_LEVEL  |
-      //                                 PHYSICS_CATEGORY_PEBBLE |
-      //                                 PHYSICS_CATEGORY_ENEMY;
       shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
       b3Sphere sphere = {b3Vec3_zero, 0.55f};
       player_dash_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
@@ -297,7 +299,6 @@ void player_create() {
     // gravity sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
-      shape_def.density = 0.0f;
       shape_def.isSensor = true;
       shape_def.enableSensorEvents = true;
       shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD;
@@ -305,10 +306,24 @@ void player_create() {
       b3Sphere sphere = {b3Vec3_zero, 2.0f};
       player_gravity_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
     }
+
+    // slam sensor
+    // {
+    //   b3ShapeDef shape_def = b3DefaultShapeDef();
+    //   shape_def.isSensor = true;
+    //   shape_def.enableSensorEvents = true;
+    //   shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER_SLAM_FIELD;
+    //   shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
+    //   b3Sphere sphere = {b3Vec3_zero, 2.0f};
+    //
+    //   b3HullData* cylinder  = b3CreateCylinder(0.5f, 4.0f, 0.0f, 32);
+    //   player_slam_sensor_id = b3CreateHullShape(player_body_id , &shape_def, cylinder);
+    //   b3DestroyHull(cylinder);
+    // }
   }
 }
 
-b3Vec2 player_move(Camera* camera, f32 dt) {
+void player_move(Camera* camera, f32 dt) {
   Vector3 camera_forward = Vector3Normalize(Vector3Subtract(camera->target,
                                                             camera->position));
   Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
@@ -356,6 +371,7 @@ b3Vec2 player_move(Camera* camera, f32 dt) {
         // slam is done
         player_in_slam_mode = false;
         player_slam_accumulate_time = 0.0f;
+        player_slam_finished = true;
       } else if (player_slam_up_time + player_slam_hold_time < player_slam_accumulate_time) {
         f32 slamming_velocity = player_slam_height / player_slam_down_time;
         player_velocity.y = -slamming_velocity;
@@ -524,8 +540,9 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3ShapeDef shape_def = b3DefaultShapeDef();
   shape_def.enableSensorEvents = true;
   shape_def.filter.categoryBits = PHYSICS_CATEGORY_ENEMY;
-  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER |
-                                  PHYSICS_CATEGORY_LEVEL  |
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER            |
+                                  PHYSICS_CATEGORY_PLAYER_SLAM_FIELD |
+                                  PHYSICS_CATEGORY_LEVEL             |
                                   PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
 
@@ -568,6 +585,8 @@ void draw_scene() {
                      rad_to_degree(angle),
                      (Vector3){1.0f, 1.0f, 1.0f},
                      DARKGREEN);
+
+    DrawCylinderWires(position, player_slam_radius, player_slam_radius, 1.0f, 32, ORANGE);
   }
 
   for (i32 i = 0; i < pebbles.count; i += 1) {
@@ -589,6 +608,28 @@ void draw_scene() {
   }
 
   DrawSphere(vec3_b3v_to_rl(player_aim), 0.2, BLUE);
+}
+
+float slam_shape_cast_fn(
+  b3ShapeId shape_id,
+  b3Pos point,
+  b3Vec3 normal,
+  float fraction,
+  uint64_t userMaterialId,
+  int triangleIndex,
+  int childIndex,
+  void* context
+) {
+  b3BodyId body_id = b3Shape_GetBody(shape_id);
+  Enemy* enemy     = (Enemy*)b3Body_GetUserData(body_id);
+  enemy->hp -= player_slam_damage;
+  printf("slam hit enemy: %lu. Remaining enemy hp: %d\n",
+         fixed_array_item_index(enemies, enemy),
+         enemy->hp);
+  if (enemy->hp <= 0) {
+    enemy_die(enemy);
+  }
+  return 1.0f;
 }
 
 int main(void) {
@@ -623,7 +664,7 @@ int main(void) {
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
   world_id = b3CreateWorld(&world_def);
 
-  player_create();
+  player_spawn();
 
   pebble_spawn((b3Vec3){10.0f, 5.0f, -2.0f}, MAROON);
   pebble_spawn((b3Vec3){10.0f, 5.0f, 0.0f},  PURPLE);
@@ -717,6 +758,12 @@ int main(void) {
             }
           }
         }
+
+        // if (B3_ID_EQUALS(event->sensorShapeId, player_slam_sensor_id)) {
+        //   // b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+        //   // body_id_array_add(player_gravity_bodies, MAX_GRAVITY_BODIES, &player_gravity_body_count, body_id);
+        // }
+
       }
       for (i32 i = 0; i < events.endCount; i += 1) {
         b3SensorEndTouchEvent* event = events.endEvents + i;
@@ -759,6 +806,21 @@ int main(void) {
         player_move(&game_camera, dt);
 
         b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+        if (player_slam_finished) {
+          player_slam_finished = false;
+
+          b3HullData* cylinder = b3CreateCylinder(0.5f, player_slam_radius, 0.0f, 32);
+          const b3Vec3* points = b3GetHullPoints(cylinder);
+          b3ShapeProxy proxy = { points, cylinder->vertexCount, 0.0f };
+
+          b3QueryFilter filter = b3DefaultQueryFilter();
+          filter.categoryBits  = PHYSICS_CATEGORY_PLAYER_SLAM_FIELD;
+          filter.maskBits      = PHYSICS_CATEGORY_ENEMY;
+
+          b3World_CastShape(world_id, player_position, &proxy, b3Vec3_zero, filter, slam_shape_cast_fn, NULL);
+          b3DestroyHull(cylinder);
+        }
+
         player_update_gravity_objects_velocities(player_position);
         camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
         player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
