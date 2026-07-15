@@ -195,7 +195,6 @@ Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_dash_sensor_id;
 b3ShapeId player_gravity_sensor_id;
-// b3ShapeId player_slam_sensor_id;
 b3Vec3    player_aim;
 
 #define MAX_GRAVITY_BODIES 16
@@ -632,10 +631,22 @@ float slam_shape_cast_fn(
   return 1.0f;
 }
 
+Sound sound_dash;
+Sound sound_jump;
+Sound sound_pebble_impact;
+Sound sound_pebble_throw;
+Sound sound_slam;
+
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
   SetTargetFPS(60);
+
+  sound_dash          = LoadSound("assets/sfx/dash.wav");
+  sound_jump          = LoadSound("assets/sfx/jump.wav");
+  sound_pebble_impact = LoadSound("assets/sfx/pebble_impact.wav");
+  sound_pebble_throw  = LoadSound("assets/sfx/pebble_throw.wav");
+  sound_slam          = LoadSound("assets/sfx/slam.wav");
 
   camera_init_default(&free_camera);
   camera_init_default(&game_camera);
@@ -756,14 +767,9 @@ int main(void) {
             if (enemy->hp <= 0) {
               enemy_die(enemy);
             }
+            PlaySound(sound_pebble_impact);
           }
         }
-
-        // if (B3_ID_EQUALS(event->sensorShapeId, player_slam_sensor_id)) {
-        //   // b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-        //   // body_id_array_add(player_gravity_bodies, MAX_GRAVITY_BODIES, &player_gravity_body_count, body_id);
-        // }
-
       }
       for (i32 i = 0; i < events.endCount; i += 1) {
         b3SensorEndTouchEvent* event = events.endEvents + i;
@@ -778,6 +784,7 @@ int main(void) {
         if (!player_in_slam_mode && (IsKeyPressed(KEY_SPACE) ||
                                          IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))) {
           player_in_slam_mode = true;
+          PlaySound(sound_jump);
         }
 
         if (IsKeyPressed(KEY_Q)) {
@@ -793,6 +800,7 @@ int main(void) {
             b3Vec3 target_velocity = b3MulSV(player_gravity_shoot_strength,
                                              b3Normalize(b3Sub(player_aim, body_position)));
             b3Body_SetLinearVelocity(body_id, target_velocity);
+            PlaySound(sound_pebble_throw);
           }
         }
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
@@ -802,12 +810,14 @@ int main(void) {
                                              b3Normalize(b3Sub(player_aim, player_position)));
             b3Vec3 final_position = b3Add(player_position, dash);
             player_dash_target = final_position;
+            PlaySound(sound_dash);
         }
         player_move(&game_camera, dt);
 
         b3Vec3 player_position = b3Body_GetPosition(player_body_id);
         if (player_slam_finished) {
           player_slam_finished = false;
+          PlaySound(sound_slam);
 
           b3HullData* cylinder = b3CreateCylinder(0.5f, player_slam_radius, 0.0f, 32);
           const b3Vec3* points = b3GetHullPoints(cylinder);
