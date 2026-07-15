@@ -66,31 +66,38 @@ f32 rad_to_degree(f32 rad) {
 } FixedArray_##T;
 
 #define FixedArray(T) FixedArray_##T
+#define fixed_array_item_index(array, item) ((u64)item - (u64)(array)->items) / sizeof((array)->items[0])
 
-#define fixed_array_item_index(array, item) ((u64)item - (u64)array.items) / sizeof(array.items[0])
+#define fixed_array_add(array, item)         \
+  i32 array_len = ARRAY_LEN((array)->items); \
+  assert((array)->count < array_len);        \
+  (array)->items[(array)->count] = item;     \
+  (array)->count += 1;
 
-#define fixed_array_add(array, item)      \
-  i32 array_len = ARRAY_LEN(array.items); \
-  assert(array.count < array_len);        \
-  array.items[array.count] = item;        \
-  array.count += 1;
+#define fixed_array_remove(array, item)                            \
+  i32 array_len = ARRAY_LEN((array)->items);                       \
+  u64 item_index = fixed_array_item_index((array), item);          \
+  assert(item_index < array_len);                                  \
+  (array)->items[item_index] = (array)->items[(array)->count - 1]; \
+  (array)->count -= 1;
 
-#define fixed_array_remove(array, item)                   \
-  i32 array_len = ARRAY_LEN(array.items);                 \
-  u64 item_index = fixed_array_item_index(array, item); \
-  assert(item_index < array_len);                         \
-  array.items[item_index] = array.items[array.count - 1]; \
-  array.count -= 1;
-
+#define fixed_array_remove_body_id(array, body_id)            \
+  for (i32 i = 0; i < (array)->count; i += 1) {               \
+    if (B3_ID_EQUALS((array)->items[i], body_id)) {           \
+      (array)->items[i] = (array)->items[(array)->count - 1]; \
+      (array)->count -= 1;                                    \
+      break;                                                  \
+    }                                                         \
+  }
 
 #define MAX_PLANES 16
-b3CollisionPlane collision_planes[MAX_PLANES];
-int collision_plane_count = 0;
+FixedArrayImpl(b3CollisionPlane, MAX_PLANES);
 
-bool plane_result_fn(b3ShapeId shape, const b3PlaneResult* results, int plane_count, void* context) {
-  for (int i = 0; i < plane_count && collision_plane_count < MAX_PLANES; ++i) {
-    collision_planes[collision_plane_count] = (b3CollisionPlane){results[i].plane, FLT_MAX, 0.0f, true};
-    collision_plane_count += 1;
+bool player_collider_result_fn(b3ShapeId shape, const b3PlaneResult* results, int plane_count, void* context) {
+  FixedArray(b3CollisionPlane)* array = (FixedArray(b3CollisionPlane)*)context;
+  for (int i = 0; i < plane_count && array->count < MAX_PLANES; ++i) {
+    b3CollisionPlane plane = {results[i].plane, FLT_MAX, 0.0f, true};
+    fixed_array_add(array, plane);
   }
   return true;
 }
@@ -130,33 +137,71 @@ RenderTexture2D create_depth_texture(int width, int height) {
     return target;
 }
 
-void body_id_array_add(b3BodyId* array, i32 capacity, i32* count, b3BodyId item) {
-  if (capacity == *count) {
-    return;
-  }
-  array[*count] = item;
-  *count += 1;
-}
-
-void body_id_array_remove(b3BodyId* array, i32* count, b3BodyId item) {
-  for (i32 i = 0; i < *count; i += 1) {
-    if (B3_ID_EQUALS(array[i], item)) {
-      array[i] = array[*count - 1];
-      *count -= 1;
-      break;
-    }
-  }
-}
-
 typedef enum {
   GAME_MODE_GAME,
   GAME_MODE_EDITOR,
 } GameMode;
-GameMode game_mode   = GAME_MODE_GAME;
-u8       game_paused = false;
-u32      game_slow_mode = 1;
+GameMode game_mode          = GAME_MODE_GAME;
+bool     game_show_debug_ui = true;
+ImGuiIO* imgui_io;
+u8       game_paused        = false;
+u32      game_slow_mode     = 1;
 Camera   free_camera;
 b3Vec3   player_resolved_positon;
+
+typedef enum {
+  OBJECT_TYPE_NONE,
+  OBJECT_TYPE_PLAYER,
+  OBJECT_TYPE_WALL,
+  OBJECT_TYPE_PEBBLE,
+  OBJECT_TYPE_ENEMY,
+} ObjectType;
+
+typedef struct {
+  void*      object;
+  ObjectType type;
+} SelectedObject;
+SelectedObject selected_object;
+
+
+bool editor_wants_to_handle_events = false;
+bool imgui_wants_to_handle_events() {
+  return imgui_io->WantCaptureMouse    ||
+         imgui_io->WantCaptureKeyboard ||
+         imgui_io->WantTextInput;
+}
+
+#define IMGUI_DRAG_FLOAT(var, min, max) \
+  igDragFloat(#var, &var, 1.0f, min, max, NULL, 0);
+
+#define IMGUI_DRAG_FLOAT_001(var, min, max) \
+  igDragFloat(#var, &var, 0.001f, min, max, NULL, 0);
+
+#define IMGUI_DRAG_INT(var, min, max) \
+  igDragInt(#var, &var, 1.0f, min, max, NULL, 0);
+
+#define IMGUI_EDIT_COLOR(c)             \
+  f32 color[4] = {(f32)(c).r / 255.0f,  \
+                  (f32)(c).g / 255.0f,  \
+                  (f32)(c).b / 255.0f,  \
+                  (f32)(c).a / 255.0f}; \
+  igColorEdit4("color", color, 0);          \
+  (c).r = color[0] * 255.0f;            \
+  (c).g = color[1] * 255.0f;            \
+  (c).b = color[2] * 255.0f;            \
+  (c).a = color[3] * 255.0f;
+
+
+bool input_slam_key_pressed;
+bool input_gravity_key_pressed;
+bool input_gravity_shoot_key_pressed;
+bool input_dash_key_pressed;
+bool input_forward;
+bool input_back;
+bool input_left;
+bool input_right;
+f32  input_gamepad_axis_x;
+f32  input_gamepad_axis_y;
 
 typedef enum {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
@@ -173,6 +218,12 @@ Camera    light_camera;
 
 Shader mesh_shader;
 Shader depth_shader;
+
+Sound sound_dash;
+Sound sound_jump;
+Sound sound_pebble_impact;
+Sound sound_pebble_throw;
+Sound sound_slam;
 
 f32       player_speed    = 500.0f;
 f32       player_friction = 20.0f;
@@ -196,6 +247,7 @@ bool      player_in_slam_mode   = false;
 f32       player_slam_accumulate_time = 0.0f;
 bool      player_slam_finished  = false;
 
+Mesh      player_mesh;
 Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_dash_sensor_id;
@@ -203,10 +255,12 @@ b3ShapeId player_gravity_sensor_id;
 b3Vec3    player_aim;
 
 #define MAX_GRAVITY_BODIES 16
-b3BodyId player_gravity_bodies[MAX_GRAVITY_BODIES];
-i32      player_gravity_body_count = 0;
-f32      player_gravity_orbit_distance = 1.1f;
+FixedArrayImpl(b3BodyId, MAX_GRAVITY_BODIES);
+FixedArray(b3BodyId) player_gravity_bodies;
+f32                  player_gravity_orbit_distance = 1.1f;
 
+Mesh  pebble_mesh;
+Model pebble_model;
 typedef struct {
   b3BodyId  body_id;
   b3ShapeId body_shape_id;
@@ -219,11 +273,9 @@ typedef struct {
 FixedArrayImpl(Pebble, MAX_PEBBLES);
 FixedArray(Pebble) pebbles;
 
-Mesh  cube_mesh;
-Model cube_model;
-
+Mesh     cube_mesh;
+Model    cube_model;
 b3BodyId floor_body_id;
-
 typedef struct {
   b3BodyId  body_id;
   b3ShapeId shape_id;
@@ -234,16 +286,16 @@ typedef struct {
 FixedArrayImpl(Wall, MAX_WALLS);
 FixedArray(Wall) walls;
 
+Mesh  enemy_mesh;
+Model enemy_model;
 typedef struct {
   b3BodyId  body_id;
   b3ShapeId shape_id;
   Vector3   scale;
+  Color     color;
   i32       hp;
 } Enemy;
 #define MAX_ENEMIES 16
-// Enemy enemies[MAX_ENEMIES];
-// i32  enemy_count = 0;
-
 FixedArrayImpl(Enemy, MAX_ENEMIES);
 FixedArray(Enemy) enemies;
 
@@ -278,8 +330,71 @@ Vector3 camera_world_ray_cast(Camera camera) {
   return result;
 }
 
+SelectedObject camera_ray_cast_object(Camera camera) {
+  SelectedObject result = {0};
+  Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), camera);
+  f32 closest = 100000000000.0f;
+
+  {
+    b3Vec3 position = b3Body_GetPosition(player_body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, player_mesh, mt);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = (SelectedObject){NULL, OBJECT_TYPE_PLAYER};
+      }
+    }
+  }
+
+  for (i32 i = 0; i < walls.count; i += 1) {
+    Wall* wall = walls.items + i;
+    b3Vec3 position = b3Body_GetPosition(wall->body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
+    Matrix m  = MatrixMultiply(ms, mt);
+    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = (SelectedObject){wall, OBJECT_TYPE_WALL};
+      }
+    }
+  }
+  for (i32 i = 0; i < pebbles.count; i += 1) {
+    Pebble* pebble = pebbles.items + i;
+    b3Vec3 position = b3Body_GetPosition(pebble->body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    // Matrix ms = MatrixScale(pebble->scale.x, wall->scale.y, wall->scale.z);
+    // Matrix m  = MatrixMultiply(ms, mt);
+    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, pebble_mesh, mt);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = (SelectedObject){pebble, OBJECT_TYPE_PEBBLE};
+      }
+    }
+  }
+  for (i32 i = 0; i < enemies.count; i += 1) {
+    Enemy* enemy = enemies.items + i;
+    b3Vec3 position = b3Body_GetPosition(enemy->body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    Matrix ms = MatrixScale(enemy->scale.x, enemy->scale.y, enemy->scale.z);
+    Matrix m  = MatrixMultiply(ms, mt);
+    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, enemy_mesh, m);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = (SelectedObject){enemy, OBJECT_TYPE_ENEMY};
+      }
+    }
+  }
+
+  return result;
+}
+
 void player_spawn() {
-  Mesh player_mesh = GenMeshSphere(0.5f, 32, 32);
+  player_mesh = GenMeshSphere(0.5f, 32, 32);
   player_model = LoadModelFromMesh(player_mesh);
   player_model.materials[0].shader = mesh_shader;
   {
@@ -310,20 +425,6 @@ void player_spawn() {
       b3Sphere sphere = {b3Vec3_zero, 2.0f};
       player_gravity_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
     }
-
-    // slam sensor
-    // {
-    //   b3ShapeDef shape_def = b3DefaultShapeDef();
-    //   shape_def.isSensor = true;
-    //   shape_def.enableSensorEvents = true;
-    //   shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER_SLAM_FIELD;
-    //   shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
-    //   b3Sphere sphere = {b3Vec3_zero, 2.0f};
-    //
-    //   b3HullData* cylinder  = b3CreateCylinder(0.5f, 4.0f, 0.0f, 32);
-    //   player_slam_sensor_id = b3CreateHullShape(player_body_id , &shape_def, cylinder);
-    //   b3DestroyHull(cylinder);
-    // }
   }
 }
 
@@ -336,23 +437,20 @@ void player_move(Camera* camera, f32 dt) {
   b3Vec3  player_forward    = vec3_rl_to_b3v(player_forward_rl);
 
   b3Vec3 acceleration = {0};
-  if (IsKeyDown(KEY_A)) {
+  if (input_left) {
     acceleration = b3Sub(acceleration, player_right);
   }
-  if (IsKeyDown(KEY_D)) {
+  if (input_right) {
     acceleration = b3Add(acceleration, player_right);
   }
-  if (IsKeyDown(KEY_W)) {
+  if (input_forward) {
     acceleration = b3Add(acceleration, player_forward);
   }
-  if (IsKeyDown(KEY_S)) {
+  if (input_back) {
     acceleration = b3Sub(acceleration, player_forward);
   }
-
-  f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
-  acceleration = b3Add(acceleration, b3MulSV(gamepad_x, player_right));
-  f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
-  acceleration = b3Add(acceleration, b3MulSV(-gamepad_y, player_forward));
+  acceleration = b3Add(acceleration, b3MulSV(input_gamepad_axis_x, player_right));
+  acceleration = b3Add(acceleration, b3MulSV(-input_gamepad_axis_y, player_forward));
 
   b3Vec3 player_position = b3Body_GetPosition(player_body_id);
   b3Vec3 player_velocity = {0};
@@ -411,8 +509,6 @@ void player_move(Camera* camera, f32 dt) {
   if (player_in_dash_mode) {
     filter.maskBits &= ~PHYSICS_CATEGORY_ENEMY;
   }
-  collision_plane_count = 0;
-
   float fraction = b3World_CastMover(world_id,
                                      player_position,
                                      &capsule,
@@ -424,20 +520,21 @@ void player_move(Camera* camera, f32 dt) {
   capsule.center1 = b3Add(capsule.center1, safe_delta);
   capsule.center2 = b3Add(capsule.center2, safe_delta);
 
-  b3World_CollideMover(world_id, player_position, &capsule, filter, plane_result_fn, NULL);
+  FixedArray(b3CollisionPlane) collision_planes = {0};
+  b3World_CollideMover(world_id, player_position, &capsule, filter, player_collider_result_fn, &collision_planes);
 
   // TODO figure out how to avoid getting player into the collidiers
-  b3PlaneSolverResult result = b3SolvePlanes(b3Vec3_zero, collision_planes, collision_plane_count);
+  b3PlaneSolverResult result = b3SolvePlanes(b3Vec3_zero, collision_planes.items, collision_planes.count);
   player_resolved_positon = b3Add(player_position, result.delta);
 
-  player_velocity = b3ClipVector(player_velocity, collision_planes, collision_plane_count);
+  player_velocity = b3ClipVector(player_velocity, collision_planes.items, collision_planes.count);
   b3Body_SetLinearVelocity(player_body_id, player_velocity);
 }
 
 void player_update_gravity_objects_velocities(b3Vec3 player_position) {
-  for (i32 i = 0; i < player_gravity_body_count; i += 1) {
+  for (i32 i = 0; i < player_gravity_bodies.count; i += 1) {
     // TODO maybe improve somehow
-    b3BodyId body_id = player_gravity_bodies[i];
+    b3BodyId body_id = player_gravity_bodies.items[i];
     b3Vec3 body_position = b3Body_GetPosition(body_id);
     b3Vec3 to_body       = b3Sub(body_position, player_position);
     f32 distance         = b3Length(to_body);
@@ -456,6 +553,10 @@ void player_update_gravity_objects_velocities(b3Vec3 player_position) {
   }
 }
 
+void pebble_create_model() {
+  pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
+  pebble_model = LoadModelFromMesh(player_mesh);
+}
 void pebble_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type     = b3_dynamicBody;
@@ -497,7 +598,7 @@ void pebble_spawn(b3Vec3 position, Color color) {
     .hp              = 5,
     .damage          = 1,
   };
-  fixed_array_add(pebbles, pebble);
+  fixed_array_add(&pebbles, pebble);
 }
 
 void pebble_draw(Pebble* pebble) {
@@ -505,7 +606,7 @@ void pebble_draw(Pebble* pebble) {
   b3Quat rotation = b3Body_GetRotation(pebble->body_id);
   f32 angle;
   Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-  DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, pebble->color);
+  DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, pebble->color);
 
   Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble->body_id));
   DrawLine3D(position, Vector3Add(position, velocity), LIME);
@@ -524,7 +625,7 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
 
   Wall wall = {body_id, shape_id, scale, color};
-  fixed_array_add(walls, wall);
+  fixed_array_add(&walls, wall);
 }
 
 void wall_draw(Wall* wall) {
@@ -534,6 +635,10 @@ void wall_draw(Wall* wall) {
   DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, wall->color);
 }
 
+void enemy_create_model() {
+  enemy_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
+  enemy_model = LoadModelFromMesh(cube_mesh);
+}
 void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_kinematicBody;
@@ -550,21 +655,21 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
                                   PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
 
-  Enemy enemy = {body_id, shape_id, scale, 20};
-  fixed_array_add(enemies, enemy);
+  Enemy enemy = {body_id, shape_id, scale, color, 20};
+  fixed_array_add(&enemies, enemy);
   b3Body_SetUserData(body_id, enemies.items + enemies.count - 1);
 }
 
 void enemy_die(Enemy* enemy) {
   b3DestroyBody(enemy->body_id);
-  fixed_array_remove(enemies, enemy);
+  fixed_array_remove(&enemies, enemy);
 }
 
 void enemy_draw(Enemy* enemy) {
   Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
   Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(enemy->body_id));
   Vector3 scale = enemy->scale;
-  DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, (Color){20, 156, 178, 255});
+  DrawModelEx(enemy_model, position, rotation_axis , 0.0f, scale, enemy->color);
 }
 
 void draw_scene() {
@@ -628,7 +733,7 @@ float slam_shape_cast_fn(
   Enemy* enemy     = (Enemy*)b3Body_GetUserData(body_id);
   enemy->hp -= player_slam_damage;
   printf("slam hit enemy: %lu. Remaining enemy hp: %d\n",
-         fixed_array_item_index(enemies, enemy),
+         fixed_array_item_index(&enemies, enemy),
          enemy->hp);
   if (enemy->hp <= 0) {
     enemy_die(enemy);
@@ -636,18 +741,66 @@ float slam_shape_cast_fn(
   return 1.0f;
 }
 
-Sound sound_dash;
-Sound sound_jump;
-Sound sound_pebble_impact;
-Sound sound_pebble_throw;
-Sound sound_slam;
+void game_process_sensor_events() {
+  b3SensorEvents events = b3World_GetSensorEvents(world_id);
+  for (i32 i = 0; i < events.beginCount; i += 1) {
+    b3SensorBeginTouchEvent* event = events.beginEvents + i;
+
+    if (player_in_dash_mode && B3_ID_EQUALS(event->sensorShapeId, player_dash_sensor_id)) {
+      b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+      Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
+      enemy->hp -= player_dash_damage;
+      printf("dash hit enemy: %lu. Remaining enemy hp: %d\n",
+             fixed_array_item_index(&enemies, enemy),
+             enemy->hp);
+      if (enemy->hp <= 0) {
+        enemy_die(enemy);
+      }
+    }
+
+    if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
+      b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+      fixed_array_add(&player_gravity_bodies, body_id);
+    }
+
+    for (i32 i = 0; i < pebbles.count; i += 1) {
+      Pebble* pebble = pebbles.items + i;
+      if (B3_ID_EQUALS(event->sensorShapeId, pebble->sensor_shape_id)) {
+        b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+        Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
+        enemy->hp -= pebble->damage;
+        pebble->hp -= 1;
+        printf("pebble hit enemy: %lu. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
+               fixed_array_item_index(&enemies, enemy),
+               enemy->hp,
+               pebble->hp);
+        if (enemy->hp <= 0) {
+          enemy_die(enemy);
+        }
+        PlaySound(sound_pebble_impact);
+      }
+    }
+  }
+  for (i32 i = 0; i < events.endCount; i += 1) {
+    b3SensorEndTouchEvent* event = events.endEvents + i;
+    if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
+      b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+      fixed_array_remove_body_id(&player_gravity_bodies, body_id);
+    }
+  }
+}
 
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
   SetTargetFPS(60);
 
+  // TODO uncomment in the release mode
+  // SetExitKey(KEY_NULL);
+
   rlImGuiSetup(true);
+
+  imgui_io = igGetIO_Nil();
 
   sound_dash          = LoadSound("assets/sfx/dash.wav");
   sound_jump          = LoadSound("assets/sfx/jump.wav");
@@ -684,6 +837,7 @@ int main(void) {
 
   player_spawn();
 
+  pebble_create_model();
   pebble_spawn((b3Vec3){10.0f, 5.0f, -2.0f}, MAROON);
   pebble_spawn((b3Vec3){10.0f, 5.0f, 0.0f},  PURPLE);
   pebble_spawn((b3Vec3){10.0f, 5.0f, 2.0f},  DARKBROWN);
@@ -708,6 +862,7 @@ int main(void) {
   wall_spawn((b3Vec3){20.0f, 1.0f,   0.0f}, (Vector3){1.0f,   1.0f, 40.0f}, BROWN);
   wall_spawn((b3Vec3){0.0f,  1.0f,  20.0f}, (Vector3){40.0f,  1.0f,  1.0f}, BROWN);
 
+  enemy_create_model();
   enemy_spawn((b3Vec3){0.0f, 1.0f, -5.0f},  (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
   enemy_spawn((b3Vec3){0.0f, 1.0f, -10.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
   enemy_spawn((b3Vec3){0.0f, 1.0f, -15.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
@@ -725,6 +880,9 @@ int main(void) {
       game_mode = GAME_MODE_GAME;
       EnableCursor();
     }
+    if (IsKeyPressed(KEY_Z)) {
+      game_show_debug_ui = !game_show_debug_ui;
+    }
     if (IsKeyPressed(KEY_F3)) {
       game_slow_mode += 1;
     }
@@ -738,117 +896,99 @@ int main(void) {
       game_paused = !game_paused;
     }
 
-    if (!game_paused) {
-      b3SensorEvents events = b3World_GetSensorEvents(world_id);
-      for (i32 i = 0; i < events.beginCount; i += 1) {
-        b3SensorBeginTouchEvent* event = events.beginEvents + i;
-
-        if (player_in_dash_mode && B3_ID_EQUALS(event->sensorShapeId, player_dash_sensor_id)) {
-          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-          Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
-          enemy->hp -= player_dash_damage;
-          printf("dash hit enemy: %lu. Remaining enemy hp: %d\n",
-                 fixed_array_item_index(enemies, enemy),
-                 enemy->hp);
-          if (enemy->hp <= 0) {
-            enemy_die(enemy);
-          }
+    editor_wants_to_handle_events = false;
+    if (game_mode == GAME_MODE_EDITOR) {
+      if (!imgui_wants_to_handle_events()) {
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+          editor_wants_to_handle_events = true;
+          UpdateCamera(&free_camera, CAMERA_FREE);
+          DisableCursor();
+        }
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+          EnableCursor();
         }
 
-        if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
-          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-          body_id_array_add(player_gravity_bodies, MAX_GRAVITY_BODIES, &player_gravity_body_count, body_id);
+        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+          editor_wants_to_handle_events = true;
+          selected_object = camera_ray_cast_object(free_camera);
         }
-
-        for (i32 i = 0; i < pebbles.count; i += 1) {
-          Pebble* pebble = pebbles.items + i;
-          if (B3_ID_EQUALS(event->sensorShapeId, pebble->sensor_shape_id)) {
-            b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-            Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
-            enemy->hp -= pebble->damage;
-            pebble->hp -= 1;
-            printf("pebble hit enemy: %lu. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
-                   fixed_array_item_index(enemies, enemy),
-                   enemy->hp,
-                   pebble->hp);
-            if (enemy->hp <= 0) {
-              enemy_die(enemy);
-            }
-            PlaySound(sound_pebble_impact);
-          }
-        }
-      }
-      for (i32 i = 0; i < events.endCount; i += 1) {
-        b3SensorEndTouchEvent* event = events.endEvents + i;
-        if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
-          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-          body_id_array_remove(player_gravity_bodies, &player_gravity_body_count, body_id);
-        }
-      }
-
-      if (game_mode == GAME_MODE_GAME) {
-        if (!player_in_slam_mode && (IsKeyPressed(KEY_SPACE) ||
-                                         IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))) {
-          player_in_slam_mode = true;
-          PlaySound(sound_jump);
-        }
-
-        if (IsKeyPressed(KEY_Q)) {
-          b3Shape_EnableSensorEvents(player_gravity_sensor_id, !b3Shape_AreSensorEventsEnabled(player_gravity_sensor_id));
-        }
-
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-          if (player_gravity_body_count) {
-            b3BodyId body_id = player_gravity_bodies[0];
-            body_id_array_remove(player_gravity_bodies, &player_gravity_body_count, body_id);
-
-            b3Vec3 body_position = b3Body_GetPosition(body_id);
-            b3Vec3 target_velocity = b3MulSV(player_gravity_shoot_strength,
-                                             b3Normalize(b3Sub(player_aim, body_position)));
-            b3Body_SetLinearVelocity(body_id, target_velocity);
-            PlaySound(sound_pebble_throw);
-          }
-        }
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-            player_in_dash_mode = true;
-            b3Vec3 player_position = b3Body_GetPosition(player_body_id);
-            b3Vec3 dash = b3MulSV(player_dash_legth,
-                                             b3Normalize(b3Sub(player_aim, player_position)));
-            b3Vec3 final_position = b3Add(player_position, dash);
-            player_dash_target = final_position;
-            PlaySound(sound_dash);
-        }
-        player_move(&game_camera, dt);
-
-        b3Vec3 player_position = b3Body_GetPosition(player_body_id);
-        if (player_slam_finished) {
-          player_slam_finished = false;
-          PlaySound(sound_slam);
-
-          b3HullData* cylinder = b3CreateCylinder(0.5f, player_slam_radius, 0.0f, 32);
-          const b3Vec3* points = b3GetHullPoints(cylinder);
-          b3ShapeProxy proxy = { points, cylinder->vertexCount, 0.0f };
-
-          b3QueryFilter filter = b3DefaultQueryFilter();
-          filter.categoryBits  = PHYSICS_CATEGORY_PLAYER_SLAM_FIELD;
-          filter.maskBits      = PHYSICS_CATEGORY_ENEMY;
-
-          b3World_CastShape(world_id, player_position, &proxy, b3Vec3_zero, filter, slam_shape_cast_fn, NULL);
-          b3DestroyHull(cylinder);
-        }
-
-        player_update_gravity_objects_velocities(player_position);
-        camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
-        player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
       }
     }
-    if (game_mode == GAME_MODE_EDITOR) {
-      if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        UpdateCamera(&free_camera, CAMERA_FREE);
-        DisableCursor();
+
+    if (!imgui_wants_to_handle_events() && !editor_wants_to_handle_events) {
+      input_slam_key_pressed          = IsKeyPressed(KEY_SPACE) ||
+                                        IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
+      input_gravity_key_pressed       = IsKeyPressed(KEY_Q);
+      input_gravity_shoot_key_pressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+      input_dash_key_pressed          = IsMouseButtonPressed(MOUSE_BUTTON_RIGHT);
+
+      input_forward = IsKeyDown(KEY_W);
+      input_back    = IsKeyDown(KEY_S);
+      input_left    = IsKeyDown(KEY_A);
+      input_right   = IsKeyDown(KEY_D);
+
+      input_gamepad_axis_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
+      input_gamepad_axis_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
+    }
+
+    if (!game_paused) {
+      game_process_sensor_events();
+
+      if (!player_in_slam_mode && input_slam_key_pressed) {
+        player_in_slam_mode = true;
+        PlaySound(sound_jump);
       }
-      if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-        EnableCursor();
+
+      if (input_gravity_key_pressed) {
+        b3Shape_EnableSensorEvents(player_gravity_sensor_id,
+                                   !b3Shape_AreSensorEventsEnabled(player_gravity_sensor_id));
+      }
+
+      if (input_gravity_shoot_key_pressed) {
+        if (player_gravity_bodies.count) {
+          b3BodyId body_id = player_gravity_bodies.items[0];
+          fixed_array_remove_body_id(&player_gravity_bodies, body_id);
+
+          b3Vec3 body_position = b3Body_GetPosition(body_id);
+          b3Vec3 target_velocity = b3MulSV(player_gravity_shoot_strength,
+                                           b3Normalize(b3Sub(player_aim, body_position)));
+          b3Body_SetLinearVelocity(body_id, target_velocity);
+          PlaySound(sound_pebble_throw);
+        }
+      }
+      if (input_dash_key_pressed) {
+          player_in_dash_mode = true;
+          b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+          b3Vec3 dash = b3MulSV(player_dash_legth,
+                                           b3Normalize(b3Sub(player_aim, player_position)));
+          b3Vec3 final_position = b3Add(player_position, dash);
+          player_dash_target = final_position;
+          PlaySound(sound_dash);
+      }
+      player_move(&game_camera, dt);
+
+      b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+      if (player_slam_finished) {
+        player_slam_finished = false;
+        PlaySound(sound_slam);
+
+        b3HullData* cylinder = b3CreateCylinder(0.5f, player_slam_radius, 0.0f, 32);
+        const b3Vec3* points = b3GetHullPoints(cylinder);
+        b3ShapeProxy proxy = { points, cylinder->vertexCount, 0.0f };
+
+        b3QueryFilter filter = b3DefaultQueryFilter();
+        filter.categoryBits  = PHYSICS_CATEGORY_PLAYER_SLAM_FIELD;
+        filter.maskBits      = PHYSICS_CATEGORY_ENEMY;
+
+        b3World_CastShape(world_id, player_position, &proxy, b3Vec3_zero, filter, slam_shape_cast_fn, NULL);
+        b3DestroyHull(cylinder);
+      }
+
+      player_update_gravity_objects_velocities(player_position);
+
+      if (game_mode == GAME_MODE_GAME) {
+        camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
+        player_aim = vec3_rl_to_b3v(camera_world_ray_cast(game_camera));
       }
     }
 
@@ -911,12 +1051,66 @@ int main(void) {
       DrawText(TextFormat("player in slam: %s", player_in_slam_mode ? "yes" : "no"), 10, text_offset, 32, RED);
       text_offset += 32;
 
-      rlImGuiBegin();
-        bool open = true;
-        igBegin("Test window", &open, 0);
-        igButton("button", (ImVec2_c){0});
-        igEnd();
-      rlImGuiEnd();
+      if (game_show_debug_ui) {
+        rlImGuiBegin();
+          bool open = true;
+          igBegin("Test window", &open, 0);
+          igButton("button", (ImVec2_c){0});
+
+          char* type_str = "???";
+          switch (selected_object.type) {
+            case OBJECT_TYPE_NONE: type_str = "OBJECT_TYPE_NONE"; break;
+            case OBJECT_TYPE_PLAYER: {
+              type_str = "OBJECT_TYPE_PLAYER";
+              IMGUI_DRAG_FLOAT(player_speed, 0.0f, 1000.0f);
+              IMGUI_DRAG_FLOAT(player_friction, 0.0f, 30.0f);
+              IMGUI_DRAG_FLOAT(player_gravity_shoot_strength, 50.0f, 200.0f);
+              IMGUI_DRAG_FLOAT(player_dash_legth, 1.0f, 20.0f);
+              IMGUI_DRAG_FLOAT_001(player_dash_time, 0.001f, 0.5f);
+              IMGUI_DRAG_INT(player_dash_damage, 1, 100);
+              IMGUI_DRAG_FLOAT_001(player_slam_up_time,   0.01f, 1.0f);
+              IMGUI_DRAG_FLOAT_001(player_slam_hold_time, 0.01f, 1.0f);
+              IMGUI_DRAG_FLOAT_001(player_slam_down_time, 0.01f, 1.0f);
+              IMGUI_DRAG_FLOAT(player_slam_height, 1.0f, 100.0f);
+              IMGUI_DRAG_INT(player_slam_damage, 1, 100);
+              IMGUI_DRAG_FLOAT(player_slam_radius, 1.0f, 20.0f);
+            } break;
+            case OBJECT_TYPE_WALL: {
+              type_str = "OBJECT_TYPE_WALL";
+              Wall* wall = (Wall*)selected_object.object;
+              if (igDragFloat3("scale", &wall->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
+                b3BoxHull box = b3MakeBoxHull(wall->scale.x / 2.0f,
+                                              wall->scale.y / 2.0f,
+                                              wall->scale.z / 2.0f);
+                b3Shape_SetHull(wall->shape_id, &box.base);
+              }
+              IMGUI_EDIT_COLOR(wall->color);
+            } break;
+            case OBJECT_TYPE_PEBBLE: {
+              type_str = "OBJECT_TYPE_PEBBLE";
+              Pebble* pebble = (Pebble*)selected_object.object;
+              IMGUI_EDIT_COLOR(pebble->color);
+              IMGUI_DRAG_INT(pebble->hp, 1, 100);
+              IMGUI_DRAG_INT(pebble->damage, 1, 100);
+            } break;
+            case OBJECT_TYPE_ENEMY: {
+              type_str = "OBJECT_TYPE_ENEMY";
+              Enemy* enemy = (Enemy*)selected_object.object;
+              if (igDragFloat3("scale", &enemy->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
+                b3BoxHull box = b3MakeBoxHull(enemy->scale.x / 2.0f,
+                                              enemy->scale.y / 2.0f,
+                                              enemy->scale.z / 2.0f);
+                b3Shape_SetHull(enemy->shape_id, &box.base);
+              }
+              IMGUI_EDIT_COLOR(enemy->color);
+              IMGUI_DRAG_INT(enemy->hp, 1, 100);
+            } break;
+          }
+          igLabelText("Hovering type:", type_str);
+
+          igEnd();
+        rlImGuiEnd();
+      }
     EndDrawing();
   }
   rlImGuiShutdown();
