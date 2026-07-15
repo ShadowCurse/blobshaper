@@ -606,7 +606,13 @@ void pebble_draw(Pebble* pebble) {
   b3Quat rotation = b3Body_GetRotation(pebble->body_id);
   f32 angle;
   Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-  DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, pebble->color);
+
+  Color color = pebble->color;
+  if (!b3Body_IsAwake(pebble->body_id)) {
+    color.a /= 2;
+  }
+
+  DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, color);
 
   Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble->body_id));
   DrawLine3D(position, Vector3Add(position, velocity), LIME);
@@ -1054,8 +1060,17 @@ int main(void) {
       if (game_show_debug_ui) {
         rlImGuiBegin();
           bool open = true;
-          igBegin("Test window", &open, 0);
-          igButton("button", (ImVec2_c){0});
+          igBegin("Editor window", &open, 0);
+
+          if (igButton("Add wall", (ImVec2_c){0})) {
+            wall_spawn((b3Vec3){0.0f,  1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, BROWN);
+          }
+          if (igButton("Add enemy", (ImVec2_c){0})) {
+            enemy_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, (Color){200, 93, 82, 255});
+          }
+          if (igButton("Add pebble", (ImVec2_c){0})) {
+            pebble_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, MAROON);
+          }
 
           char* type_str = "???";
           switch (selected_object.type) {
@@ -1078,25 +1093,50 @@ int main(void) {
             case OBJECT_TYPE_WALL: {
               type_str = "OBJECT_TYPE_WALL";
               Wall* wall = (Wall*)selected_object.object;
-              if (igDragFloat3("scale", &wall->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
+              b3Vec3 position = b3Body_GetPosition(wall->body_id);
+              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
+                b3Body_SetTransform(wall->body_id, position, b3Body_GetRotation(wall->body_id));
+              }
+              if (igDragFloat3("scale", (f32*)&wall->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
                 b3BoxHull box = b3MakeBoxHull(wall->scale.x / 2.0f,
                                               wall->scale.y / 2.0f,
                                               wall->scale.z / 2.0f);
                 b3Shape_SetHull(wall->shape_id, &box.base);
               }
               IMGUI_EDIT_COLOR(wall->color);
+
+              if (igButton("Remove", (ImVec2_c){0})) {
+                b3DestroyBody(wall->body_id);
+                fixed_array_remove(&walls, wall);
+                selected_object = (SelectedObject){0};
+              }
             } break;
             case OBJECT_TYPE_PEBBLE: {
               type_str = "OBJECT_TYPE_PEBBLE";
               Pebble* pebble = (Pebble*)selected_object.object;
+              b3Vec3 position = b3Body_GetPosition(pebble->body_id);
+              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
+                b3Body_SetTransform(pebble->body_id, position, b3Body_GetRotation(pebble->body_id));
+                b3Body_SetAwake(pebble->body_id, true);
+              }
               IMGUI_EDIT_COLOR(pebble->color);
               IMGUI_DRAG_INT(pebble->hp, 1, 100);
               IMGUI_DRAG_INT(pebble->damage, 1, 100);
+
+              if (igButton("Remove", (ImVec2_c){0})) {
+                b3DestroyBody(pebble->body_id);
+                fixed_array_remove(&pebbles, pebble);
+                selected_object = (SelectedObject){0};
+              }
             } break;
             case OBJECT_TYPE_ENEMY: {
               type_str = "OBJECT_TYPE_ENEMY";
               Enemy* enemy = (Enemy*)selected_object.object;
-              if (igDragFloat3("scale", &enemy->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
+              b3Vec3 position = b3Body_GetPosition(enemy->body_id);
+              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
+                b3Body_SetTransform(enemy->body_id, position, b3Body_GetRotation(enemy->body_id));
+              }
+              if (igDragFloat3("scale", (f32*)&enemy->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
                 b3BoxHull box = b3MakeBoxHull(enemy->scale.x / 2.0f,
                                               enemy->scale.y / 2.0f,
                                               enemy->scale.z / 2.0f);
@@ -1104,6 +1144,12 @@ int main(void) {
               }
               IMGUI_EDIT_COLOR(enemy->color);
               IMGUI_DRAG_INT(enemy->hp, 1, 100);
+
+              if (igButton("Remove", (ImVec2_c){0})) {
+                b3DestroyBody(enemy->body_id);
+                fixed_array_remove(&enemies, enemy);
+                selected_object = (SelectedObject){0};
+              }
             } break;
           }
           igLabelText("Hovering type:", type_str);
