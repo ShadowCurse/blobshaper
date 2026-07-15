@@ -1,6 +1,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+
+#include <sys/stat.h>
+#include <sys/mman.h>
 
 #include "raylib.h"
 #include "rlgl.h"
@@ -89,6 +95,8 @@ f32 rad_to_degree(f32 rad) {
       break;                                                  \
     }                                                         \
   }
+
+#define fixed_array_clear(array) (array)->count = 0;
 
 #define MAX_PLANES 16
 FixedArrayImpl(b3CollisionPlane, MAX_PLANES);
@@ -796,6 +804,206 @@ void game_process_sensor_events() {
   }
 }
 
+char level_name[32] = {0};
+void level_save() {
+  i32 fd = open(level_name, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+  if (fd <= 0) {
+    perror("save level");
+    return;
+  }
+  char buff[128];
+
+  for (i32 i = 0; i < walls.count; i += 1) {
+    write(fd, "[wall]\n", 7);
+    Wall* wall = walls.items + i;
+
+    b3Vec3 position = b3Body_GetPosition(wall->body_id);
+    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
+    write(fd, buff, n);
+    b3Quat rotation = b3Body_GetRotation(wall->body_id);
+    n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "scale %f %f %f\n", wall->scale.x, wall->scale.y, wall->scale.z);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "color %d %d %d\n", wall->color.r, wall->color.g, wall->color.b);
+    write(fd, buff, n);
+  }
+  write(fd, "\n", 1);
+
+  for (i32 i = 0; i < enemies.count; i += 1) {
+    write(fd, "[enemy]\n", 8);
+    Enemy* enemy = enemies.items + i;
+
+    b3Vec3 position = b3Body_GetPosition(enemy->body_id);
+    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
+    write(fd, buff, n);
+    b3Quat rotation = b3Body_GetRotation(enemy->body_id);
+    n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "scale %f %f %f\n", enemy->scale.x, enemy->scale.y, enemy->scale.z);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "color %d %d %d\n", enemy->color.r, enemy->color.g, enemy->color.b);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "hp %d\n", enemy->hp);
+    write(fd, buff, n);
+  }
+  write(fd, "\n", 1);
+
+  for (i32 i = 0; i < pebbles.count; i += 1) {
+    write(fd, "[pebble]\n", 9);
+    Pebble* pebble = pebbles.items + i;
+
+    b3Vec3 position = b3Body_GetPosition(pebble->body_id);
+    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
+    write(fd, buff, n);
+    b3Quat rotation = b3Body_GetRotation(pebble->body_id);
+    n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "color %d %d %d\n", pebble->color.r, pebble->color.g, pebble->color.b);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "hp %d\n", pebble->hp);
+    write(fd, buff, n);
+    n = snprintf(buff, 128, "damage %d\n", pebble->damage);
+    write(fd, buff, n);
+  }
+  write(fd, "\n", 1);
+
+  close(fd);
+}
+
+void skip_past_new_line(char** mem) {
+  while (**mem != '\n') *mem += 1;
+  *mem += 1;
+}
+void level_load() {
+  i32 fd = open(level_name, O_RDONLY, 0);
+  if (fd < 0) {
+    perror("load level");
+    return;
+  }
+
+  struct stat file_stat;
+  if (fstat(fd, &file_stat) == -1) {
+    perror("load level fstat");
+    close(fd);
+    return;
+  }
+
+  char* mem = (char*)mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (mem == MAP_FAILED) {
+    perror("load level mmap");
+    close(fd);
+    return;
+  }
+
+  for (i32 i = 0; i < walls.count; i += 1) {
+    Wall* wall = walls.items + i;
+    b3DestroyBody(wall->body_id);
+  }
+  fixed_array_clear(&walls);
+  for (i32 i = 0; i < enemies.count; i += 1) {
+    Enemy* enemy = enemies.items + i;
+    b3DestroyBody(enemy->body_id);
+  }
+  fixed_array_clear(&enemies);
+  for (i32 i = 0; i < pebbles.count; i += 1) {
+    Pebble* pebble = pebbles.items + i;
+    b3DestroyBody(pebble->body_id);
+  }
+  fixed_array_clear(&pebbles);
+
+  char* end = mem + file_stat.st_size;
+  while (mem < end) {
+    if (!memcmp(mem, "[wall]\n", 7)) {
+      mem += 7;
+
+      b3Vec3 position;
+      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
+      skip_past_new_line(&mem);
+
+      b3Quat rotation;
+      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
+                                            &rotation.v.y,
+                                            &rotation.v.z,
+                                            &rotation.s);
+      skip_past_new_line(&mem);
+
+      Vector3 scale;
+      sscanf(mem, "scale %f %f %f\n", &scale.x, &scale.y, &scale.z);
+      skip_past_new_line(&mem);
+
+      Color color;
+      color.a = 255;
+      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
+      skip_past_new_line(&mem);
+
+      wall_spawn(position, scale, color);
+    } else if (!memcmp(mem, "[enemy]\n", 8)) {
+      mem += 8;
+      printf("found enemy\n");
+
+      b3Vec3 position;
+      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
+      skip_past_new_line(&mem);
+
+      b3Quat rotation;
+      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
+                                            &rotation.v.y,
+                                            &rotation.v.z,
+                                            &rotation.s);
+      skip_past_new_line(&mem);
+
+      Vector3 scale;
+      sscanf(mem, "scale %f %f %f\n", &scale.x, &scale.y, &scale.z);
+      skip_past_new_line(&mem);
+
+      Color color;
+      color.a = 255;
+      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
+      skip_past_new_line(&mem);
+
+      i32 hp;
+      sscanf(mem, "hp %d\n", &hp);
+      skip_past_new_line(&mem);
+
+      enemy_spawn(position, scale, color);
+    } else if (!memcmp(mem, "[pebble]\n", 9)) {
+      mem += 9;
+      printf("found pebble\n");
+
+      b3Vec3 position;
+      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
+      skip_past_new_line(&mem);
+
+      b3Quat rotation;
+      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
+                                            &rotation.v.y,
+                                            &rotation.v.z,
+                                            &rotation.s);
+      skip_past_new_line(&mem);
+
+      Color color;
+      color.a = 255;
+      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
+      skip_past_new_line(&mem);
+
+      i32 hp;
+      sscanf(mem, "hp %d\n", &hp);
+      skip_past_new_line(&mem);
+
+      i32 damage;
+      sscanf(mem, "damage %d\n", &hp);
+      skip_past_new_line(&mem);
+
+      pebble_spawn(position, color);
+    } else {
+      mem += 1;
+    }
+  }
+  munmap(mem, file_stat.st_size);
+  close(fd);
+}
+
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
@@ -1061,6 +1269,15 @@ int main(void) {
         rlImGuiBegin();
           bool open = true;
           igBegin("Editor window", &open, 0);
+          igInputText("Level name", level_name, ARRAY_LEN(level_name), 0, NULL, NULL);
+
+          if (igButton("Save level", (ImVec2_c){0})) {
+            level_save();
+          }
+
+          if (igButton("Load level", (ImVec2_c){0})) {
+            level_load();
+          }
 
           if (igButton("Add wall", (ImVec2_c){0})) {
             wall_spawn((b3Vec3){0.0f,  1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, BROWN);
