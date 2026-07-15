@@ -7,4 +7,9 @@ zig cc \
   -I./box3d/include \
   -L./box3d/build/src \
   -lbox3d \
-  -lm
+  -lm \
+  -I./rlImGui/ \
+  -I./cimgui/ \
+  -L./imgui_build \
+  -limgui \
+  -lstdc++

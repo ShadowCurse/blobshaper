@@ -5,6 +5,11 @@
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
+
+#include "rlImGui.h"
+#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
+#include "cimgui.h"
+
 #include "box3d/box3d.h"
 
 #define u8  uint8_t
@@ -642,6 +647,8 @@ int main(void) {
   InitAudioDevice();
   SetTargetFPS(60);
 
+  rlImGuiSetup(true);
+
   sound_dash          = LoadSound("assets/sfx/dash.wav");
   sound_jump          = LoadSound("assets/sfx/jump.wav");
   sound_pebble_impact = LoadSound("assets/sfx/pebble_impact.wav");
@@ -780,7 +787,6 @@ int main(void) {
       }
 
       if (game_mode == GAME_MODE_GAME) {
-
         if (!player_in_slam_mode && (IsKeyPressed(KEY_SPACE) ||
                                          IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))) {
           player_in_slam_mode = true;
@@ -905,8 +911,15 @@ int main(void) {
       DrawText(TextFormat("player in slam: %s", player_in_slam_mode ? "yes" : "no"), 10, text_offset, 32, RED);
       text_offset += 32;
 
+      rlImGuiBegin();
+        bool open = true;
+        igBegin("Test window", &open, 0);
+        igButton("button", (ImVec2_c){0});
+        igEnd();
+      rlImGuiEnd();
     EndDrawing();
   }
+  rlImGuiShutdown();
   CloseAudioDevice();
   CloseWindow();
 
