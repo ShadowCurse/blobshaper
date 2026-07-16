@@ -73,6 +73,7 @@ f32 rad_to_degree(f32 rad) {
 
 #define FixedArray(T) FixedArray_##T
 #define fixed_array_item_index(array, item) ((u64)item - (u64)(array)->items) / sizeof((array)->items[0])
+#define fixed_array_last_item(array) &(array)->items[(array)->count - 1]
 
 #define fixed_array_add(array, item)         \
   i32 array_len = ARRAY_LEN((array)->items); \
@@ -157,21 +158,6 @@ u32      game_slow_mode     = 1;
 Camera   free_camera;
 b3Vec3   player_resolved_positon;
 
-typedef enum {
-  OBJECT_TYPE_NONE,
-  OBJECT_TYPE_PLAYER,
-  OBJECT_TYPE_WALL,
-  OBJECT_TYPE_PEBBLE,
-  OBJECT_TYPE_ENEMY,
-} ObjectType;
-
-typedef struct {
-  void*      object;
-  ObjectType type;
-} SelectedObject;
-SelectedObject selected_object;
-
-
 bool editor_wants_to_handle_events = false;
 bool imgui_wants_to_handle_events() {
   return imgui_io->WantCaptureMouse    ||
@@ -210,6 +196,36 @@ bool input_left;
 bool input_right;
 f32  input_gamepad_axis_x;
 f32  input_gamepad_axis_y;
+
+typedef enum {
+  OBJECT_TYPE_NONE,
+  OBJECT_TYPE_PLAYER,
+  OBJECT_TYPE_WALL,
+  OBJECT_TYPE_PEBBLE,
+  OBJECT_TYPE_ENEMY,
+} ObjectType;
+
+typedef struct {
+  ObjectType type;
+  b3BodyId   body_id;
+  b3ShapeId  shape_id;
+  b3ShapeId  sensor_shape_id;
+  Vector3    scale;
+  Color      color;
+  i32        hp;
+  i32        damage;
+} Object;
+
+Object* selected_object;
+
+#define MAX_OBJECTS 64
+FixedArrayImpl(Object, MAX_OBJECTS);
+FixedArray(Object) objects;
+
+void object_destroy(Object* o) {
+  b3DestroyBody(o->body_id);
+  fixed_array_remove(&objects, o);
+}
 
 typedef enum {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
@@ -269,43 +285,13 @@ f32                  player_gravity_orbit_distance = 1.1f;
 
 Mesh  pebble_mesh;
 Model pebble_model;
-typedef struct {
-  b3BodyId  body_id;
-  b3ShapeId body_shape_id;
-  b3ShapeId sensor_shape_id;
-  Color     color;
-  i32       hp;
-  i32       damage;
-} Pebble;
-#define MAX_PEBBLES 16
-FixedArrayImpl(Pebble, MAX_PEBBLES);
-FixedArray(Pebble) pebbles;
+
+Mesh  enemy_mesh;
+Model enemy_model;
 
 Mesh     cube_mesh;
 Model    cube_model;
 b3BodyId floor_body_id;
-typedef struct {
-  b3BodyId  body_id;
-  b3ShapeId shape_id;
-  Vector3   scale;
-  Color     color;
-} Wall;
-#define MAX_WALLS 16
-FixedArrayImpl(Wall, MAX_WALLS);
-FixedArray(Wall) walls;
-
-Mesh  enemy_mesh;
-Model enemy_model;
-typedef struct {
-  b3BodyId  body_id;
-  b3ShapeId shape_id;
-  Vector3   scale;
-  Color     color;
-  i32       hp;
-} Enemy;
-#define MAX_ENEMIES 16
-FixedArrayImpl(Enemy, MAX_ENEMIES);
-FixedArray(Enemy) enemies;
 
 void camera_follow_player(Camera* camera, Vector3 player_position) {
   camera->position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
@@ -321,11 +307,12 @@ Vector3 camera_world_ray_cast(Camera camera) {
     result = collision.point;
     closest = collision.distance;
   }
-  for (i32 i = 0; i < walls.count; i += 1) {
-    Wall* wall = walls.items + i;
-    b3Vec3 position = b3Body_GetPosition(wall->body_id);
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    if (o->type != OBJECT_TYPE_WALL) continue;
+    b3Vec3 position = b3Body_GetPosition(o->body_id);
     Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
+    Matrix ms = MatrixScale(o->scale.x, o->scale.y, o->scale.z);
     Matrix m  = MatrixMultiply(ms, mt);
     collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
     if (collision.hit) {
@@ -338,62 +325,34 @@ Vector3 camera_world_ray_cast(Camera camera) {
   return result;
 }
 
-SelectedObject camera_ray_cast_object(Camera camera) {
-  SelectedObject result = {0};
+Object* camera_ray_cast_object(Camera camera) {
+  Object* result = NULL;
   Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), camera);
   f32 closest = 100000000000.0f;
 
-  {
-    b3Vec3 position = b3Body_GetPosition(player_body_id);
-    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, player_mesh, mt);
-    if (collision.hit) {
-      if (collision.distance < closest) {
-        closest = collision.distance;
-        result = (SelectedObject){NULL, OBJECT_TYPE_PLAYER};
-      }
-    }
-  }
+  // {
+  //   b3Vec3 position = b3Body_GetPosition(player_body_id);
+  //   Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+  //   RayCollision collision = GetRayCollisionMesh(to_mouse_ray, player_mesh, mt);
+  //   if (collision.hit) {
+  //     if (collision.distance < closest) {
+  //       closest = collision.distance;
+  //       result = NULL;
+  //     }
+  //   }
+  // }
 
-  for (i32 i = 0; i < walls.count; i += 1) {
-    Wall* wall = walls.items + i;
-    b3Vec3 position = b3Body_GetPosition(wall->body_id);
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    b3Vec3 position = b3Body_GetPosition(o->body_id);
     Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    Matrix ms = MatrixScale(wall->scale.x, wall->scale.y, wall->scale.z);
+    Matrix ms = MatrixScale(o->scale.x, o->scale.y, o->scale.z);
     Matrix m  = MatrixMultiply(ms, mt);
     RayCollision collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
     if (collision.hit) {
       if (collision.distance < closest) {
         closest = collision.distance;
-        result = (SelectedObject){wall, OBJECT_TYPE_WALL};
-      }
-    }
-  }
-  for (i32 i = 0; i < pebbles.count; i += 1) {
-    Pebble* pebble = pebbles.items + i;
-    b3Vec3 position = b3Body_GetPosition(pebble->body_id);
-    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    // Matrix ms = MatrixScale(pebble->scale.x, wall->scale.y, wall->scale.z);
-    // Matrix m  = MatrixMultiply(ms, mt);
-    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, pebble_mesh, mt);
-    if (collision.hit) {
-      if (collision.distance < closest) {
-        closest = collision.distance;
-        result = (SelectedObject){pebble, OBJECT_TYPE_PEBBLE};
-      }
-    }
-  }
-  for (i32 i = 0; i < enemies.count; i += 1) {
-    Enemy* enemy = enemies.items + i;
-    b3Vec3 position = b3Body_GetPosition(enemy->body_id);
-    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    Matrix ms = MatrixScale(enemy->scale.x, enemy->scale.y, enemy->scale.z);
-    Matrix m  = MatrixMultiply(ms, mt);
-    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, enemy_mesh, m);
-    if (collision.hit) {
-      if (collision.distance < closest) {
-        closest = collision.distance;
-        result = (SelectedObject){enemy, OBJECT_TYPE_ENEMY};
+        result = o;
       }
     }
   }
@@ -572,7 +531,7 @@ void pebble_spawn(b3Vec3 position, Color color) {
   body_def.position = position;
   b3BodyId body_id = b3CreateBody(world_id, &body_def);
 
-  b3ShapeId body_shape_id;
+  b3ShapeId shape_id;
   {
     b3ShapeDef shape_def = b3DefaultShapeDef();
     shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
@@ -584,7 +543,7 @@ void pebble_spawn(b3Vec3 position, Color color) {
     shape_def.density = 0.1f;
     shape_def.enableSensorEvents = true;
     b3Sphere sphere = {b3Vec3_zero, 0.25f};
-    body_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+    shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
   }
 
   b3ShapeId sensor_shape_id;
@@ -598,32 +557,18 @@ void pebble_spawn(b3Vec3 position, Color color) {
     sensor_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
   }
 
-  Pebble pebble = {
+  Object object = {
+    .type            = OBJECT_TYPE_PEBBLE,
     .body_id         = body_id,
-    .body_shape_id   = body_shape_id,
+    .shape_id        = shape_id,
     .sensor_shape_id = sensor_shape_id,
+    .scale           = Vector3One(),
     .color           = color,
     .hp              = 5,
     .damage          = 1,
   };
-  fixed_array_add(&pebbles, pebble);
-}
-
-void pebble_draw(Pebble* pebble) {
-  Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(pebble->body_id));
-  b3Quat rotation = b3Body_GetRotation(pebble->body_id);
-  f32 angle;
-  Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-
-  Color color = pebble->color;
-  if (!b3Body_IsAwake(pebble->body_id)) {
-    color.a /= 2;
-  }
-
-  DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, color);
-
-  Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(pebble->body_id));
-  DrawLine3D(position, Vector3Add(position, velocity), LIME);
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
 }
 
 void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
@@ -638,15 +583,18 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
 
-  Wall wall = {body_id, shape_id, scale, color};
-  fixed_array_add(&walls, wall);
-}
-
-void wall_draw(Wall* wall) {
-  Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
-  Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(wall->body_id));
-  Vector3 scale = wall->scale;
-  DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, wall->color);
+  Object object = {
+    .type            = OBJECT_TYPE_WALL,
+    .body_id         = body_id,
+    .shape_id        = shape_id,
+    .sensor_shape_id = 0,
+    .scale           = scale,
+    .color           = color,
+    .hp              = 0,
+    .damage          = 0,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
 }
 
 void enemy_create_model() {
@@ -669,21 +617,18 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
                                   PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
 
-  Enemy enemy = {body_id, shape_id, scale, color, 20};
-  fixed_array_add(&enemies, enemy);
-  b3Body_SetUserData(body_id, enemies.items + enemies.count - 1);
-}
-
-void enemy_die(Enemy* enemy) {
-  b3DestroyBody(enemy->body_id);
-  fixed_array_remove(&enemies, enemy);
-}
-
-void enemy_draw(Enemy* enemy) {
-  Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
-  Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(enemy->body_id));
-  Vector3 scale = enemy->scale;
-  DrawModelEx(enemy_model, position, rotation_axis , 0.0f, scale, enemy->color);
+  Object object = {
+    .type            = OBJECT_TYPE_ENEMY,
+    .body_id         = body_id,
+    .shape_id        = shape_id,
+    .sensor_shape_id = 0,
+    .scale           = scale,
+    .color           = color,
+    .hp              = 20,
+    .damage          = 5,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
 }
 
 void draw_scene() {
@@ -712,22 +657,46 @@ void draw_scene() {
     DrawCylinderWires(position, player_slam_radius, player_slam_radius, 1.0f, 32, ORANGE);
   }
 
-  for (i32 i = 0; i < pebbles.count; i += 1) {
-    pebble_draw(pebbles.items + i);
-  }
-
-  // level
+  // floor
   Vector3 floor_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
   Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
   Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
   DrawModelEx(cube_model, floor_position, floor_rotation_axis , 0.0f, floor_scale, GRAY);
 
-  for (i32 i = 0; i < walls.count; i += 1) {
-    wall_draw(walls.items + i);
-  }
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    switch (o->type) {
+      case OBJECT_TYPE_NONE:   break;
+      case OBJECT_TYPE_PLAYER: break;
+      case OBJECT_TYPE_WALL: {
+        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+        DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, o->color);
+      } break;
+      case OBJECT_TYPE_PEBBLE: {
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        b3Quat rotation = b3Body_GetRotation(o->body_id);
+        f32 angle;
+        Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
 
-  for (i32 i = 0; i < enemies.count; i += 1) {
-    enemy_draw(enemies.items + i);
+        Color color = o->color;
+        if (!b3Body_IsAwake(o->body_id)) {
+          color.a /= 2;
+        }
+
+        DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, color);
+
+        Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(o->body_id));
+        DrawLine3D(position, Vector3Add(position, velocity), LIME);
+      } break;
+      case OBJECT_TYPE_ENEMY: {
+        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+        DrawModelEx(enemy_model, position, rotation_axis , 0.0f, scale, o->color);
+      } break;
+    }
   }
 
   DrawSphere(vec3_b3v_to_rl(player_aim), 0.2, BLUE);
@@ -744,13 +713,13 @@ float slam_shape_cast_fn(
   void* context
 ) {
   b3BodyId body_id = b3Shape_GetBody(shape_id);
-  Enemy* enemy     = (Enemy*)b3Body_GetUserData(body_id);
-  enemy->hp -= player_slam_damage;
-  printf("slam hit enemy: %lu. Remaining enemy hp: %d\n",
-         fixed_array_item_index(&enemies, enemy),
-         enemy->hp);
-  if (enemy->hp <= 0) {
-    enemy_die(enemy);
+  Object* enemy = (Object*)b3Body_GetUserData(body_id);
+  if (enemy ->type == OBJECT_TYPE_ENEMY) {
+    enemy->hp -= player_slam_damage;
+    printf("slam hit enemy. Remaining enemy hp: %d\n", enemy->hp);
+    if (enemy ->hp <= 0) {
+      object_destroy(enemy);
+    }
   }
   return 1.0f;
 }
@@ -762,13 +731,13 @@ void game_process_sensor_events() {
 
     if (player_in_dash_mode && B3_ID_EQUALS(event->sensorShapeId, player_dash_sensor_id)) {
       b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-      Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
-      enemy->hp -= player_dash_damage;
-      printf("dash hit enemy: %lu. Remaining enemy hp: %d\n",
-             fixed_array_item_index(&enemies, enemy),
-             enemy->hp);
-      if (enemy->hp <= 0) {
-        enemy_die(enemy);
+      Object* enemy = (Object*)b3Body_GetUserData(body_id);
+      if (enemy->type == OBJECT_TYPE_ENEMY) {
+        enemy->hp -= player_dash_damage;
+        printf("dash hit enemy. Remaining enemy hp: %d\n", enemy->hp);
+        if (enemy->hp <= 0) {
+          object_destroy(enemy);
+        }
       }
     }
 
@@ -777,21 +746,24 @@ void game_process_sensor_events() {
       fixed_array_add(&player_gravity_bodies, body_id);
     }
 
-    for (i32 i = 0; i < pebbles.count; i += 1) {
-      Pebble* pebble = pebbles.items + i;
-      if (B3_ID_EQUALS(event->sensorShapeId, pebble->sensor_shape_id)) {
-        b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-        Enemy* enemy = (Enemy*)b3Body_GetUserData(body_id);
-        enemy->hp -= pebble->damage;
-        pebble->hp -= 1;
-        printf("pebble hit enemy: %lu. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
-               fixed_array_item_index(&enemies, enemy),
-               enemy->hp,
-               pebble->hp);
-        if (enemy->hp <= 0) {
-          enemy_die(enemy);
+    for (i32 i = 0; i < objects.count; i += 1) {
+      Object* pebble = objects.items + i;
+      if (pebble->type == OBJECT_TYPE_PEBBLE) {
+        if (B3_ID_EQUALS(event->sensorShapeId, pebble->sensor_shape_id)) {
+          b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+          Object* enemy = (Object*)b3Body_GetUserData(body_id);
+          if (enemy->type == OBJECT_TYPE_ENEMY) {
+            enemy->hp -= pebble->damage;
+            pebble->hp -= 1;
+            printf("pebble hit enemy. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
+                   enemy->hp,
+                   pebble->hp);
+            if (enemy->hp <= 0) {
+              object_destroy(enemy);
+            }
+          }
+          PlaySound(sound_pebble_impact);
         }
-        PlaySound(sound_pebble_impact);
       }
     }
   }
@@ -813,60 +785,42 @@ void level_save() {
   }
   char buff[128];
 
-  for (i32 i = 0; i < walls.count; i += 1) {
-    write(fd, "[wall]\n", 7);
-    Wall* wall = walls.items + i;
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    char* type_str = "???";
+    switch (o->type) {
+      case OBJECT_TYPE_NONE:    type_str = "OBJECT_TYPE_NONE";   break;
+      case OBJECT_TYPE_PLAYER:  type_str = "OBJECT_TYPE_PLAYER"; break;
+      case OBJECT_TYPE_WALL:    type_str = "OBJECT_TYPE_WALL";   break;
+      case OBJECT_TYPE_PEBBLE:  type_str = "OBJECT_TYPE_PEBBLE"; break;
+      case OBJECT_TYPE_ENEMY:   type_str = "OBJECT_TYPE_ENEMY";  break;
+    }
 
-    b3Vec3 position = b3Body_GetPosition(wall->body_id);
-    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
+    i32 n = snprintf(buff, 128, "type %s\n", type_str);
     write(fd, buff, n);
-    b3Quat rotation = b3Body_GetRotation(wall->body_id);
+
+    b3Vec3 position = b3Body_GetPosition(o->body_id);
+    n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
+    write(fd, buff, n);
+
+    b3Quat rotation = b3Body_GetRotation(o->body_id);
     n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
     write(fd, buff, n);
-    n = snprintf(buff, 128, "scale %f %f %f\n", wall->scale.x, wall->scale.y, wall->scale.z);
+
+    n = snprintf(buff, 128, "scale %f %f %f\n", o->scale.x, o->scale.y, o->scale.z);
     write(fd, buff, n);
-    n = snprintf(buff, 128, "color %d %d %d\n", wall->color.r, wall->color.g, wall->color.b);
+
+    n = snprintf(buff, 128, "color %d %d %d\n", o->color.r, o->color.g, o->color.b);
     write(fd, buff, n);
+
+    n = snprintf(buff, 128, "hp %d\n", o->hp);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "damage %d\n", o->hp);
+    write(fd, buff, n);
+
+    write(fd, "\n", 1);
   }
-  write(fd, "\n", 1);
-
-  for (i32 i = 0; i < enemies.count; i += 1) {
-    write(fd, "[enemy]\n", 8);
-    Enemy* enemy = enemies.items + i;
-
-    b3Vec3 position = b3Body_GetPosition(enemy->body_id);
-    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
-    write(fd, buff, n);
-    b3Quat rotation = b3Body_GetRotation(enemy->body_id);
-    n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "scale %f %f %f\n", enemy->scale.x, enemy->scale.y, enemy->scale.z);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "color %d %d %d\n", enemy->color.r, enemy->color.g, enemy->color.b);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "hp %d\n", enemy->hp);
-    write(fd, buff, n);
-  }
-  write(fd, "\n", 1);
-
-  for (i32 i = 0; i < pebbles.count; i += 1) {
-    write(fd, "[pebble]\n", 9);
-    Pebble* pebble = pebbles.items + i;
-
-    b3Vec3 position = b3Body_GetPosition(pebble->body_id);
-    i32 n = snprintf(buff, 128, "positon %f %f %f\n", position.x, position.y, position.z);
-    write(fd, buff, n);
-    b3Quat rotation = b3Body_GetRotation(pebble->body_id);
-    n = snprintf(buff, 128, "rotation %f %f %f %f\n", rotation.v.x, rotation.v.y, rotation.v.z, rotation.s);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "color %d %d %d\n", pebble->color.r, pebble->color.g, pebble->color.b);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "hp %d\n", pebble->hp);
-    write(fd, buff, n);
-    n = snprintf(buff, 128, "damage %d\n", pebble->damage);
-    write(fd, buff, n);
-  }
-  write(fd, "\n", 1);
 
   close(fd);
 }
@@ -896,108 +850,58 @@ void level_load() {
     return;
   }
 
-  for (i32 i = 0; i < walls.count; i += 1) {
-    Wall* wall = walls.items + i;
-    b3DestroyBody(wall->body_id);
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    b3DestroyBody(o->body_id);
   }
-  fixed_array_clear(&walls);
-  for (i32 i = 0; i < enemies.count; i += 1) {
-    Enemy* enemy = enemies.items + i;
-    b3DestroyBody(enemy->body_id);
-  }
-  fixed_array_clear(&enemies);
-  for (i32 i = 0; i < pebbles.count; i += 1) {
-    Pebble* pebble = pebbles.items + i;
-    b3DestroyBody(pebble->body_id);
-  }
-  fixed_array_clear(&pebbles);
+  fixed_array_clear(&objects);
 
   char* end = mem + file_stat.st_size;
   while (mem < end) {
-    if (!memcmp(mem, "[wall]\n", 7)) {
-      mem += 7;
+    char type_str[128];
+    sscanf(mem, "type %s\n", type_str);
+    skip_past_new_line(&mem);
 
-      b3Vec3 position;
-      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
-      skip_past_new_line(&mem);
+    b3Vec3 position;
+    sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
+    skip_past_new_line(&mem);
 
-      b3Quat rotation;
-      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
-                                            &rotation.v.y,
-                                            &rotation.v.z,
-                                            &rotation.s);
-      skip_past_new_line(&mem);
+    b3Quat rotation;
+    sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
+                                          &rotation.v.y,
+                                          &rotation.v.z,
+                                          &rotation.s);
+    skip_past_new_line(&mem);
 
-      Vector3 scale;
-      sscanf(mem, "scale %f %f %f\n", &scale.x, &scale.y, &scale.z);
-      skip_past_new_line(&mem);
+    Vector3 scale;
+    sscanf(mem, "scale %f %f %f\n", &scale.x, &scale.y, &scale.z);
+    skip_past_new_line(&mem);
 
-      Color color;
-      color.a = 255;
-      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
-      skip_past_new_line(&mem);
+    Color color;
+    color.a = 255;
+    sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
+    skip_past_new_line(&mem);
 
+    i32 hp;
+    sscanf(mem, "hp %d\n", &hp);
+    skip_past_new_line(&mem);
+
+    i32 damage;
+    sscanf(mem, "damage %d\n", &hp);
+    skip_past_new_line(&mem);
+
+    mem += 1;
+
+    if (!memcmp(type_str, "OBJECT_TYPE_NONE", 16)) {
+
+    } else if (!memcmp(type_str, "OBJECT_TYPE_PLAYER", 18)) {
+
+    } else if (!memcmp(type_str, "OBJECT_TYPE_WALL", 16)) {
       wall_spawn(position, scale, color);
-    } else if (!memcmp(mem, "[enemy]\n", 8)) {
-      mem += 8;
-      printf("found enemy\n");
-
-      b3Vec3 position;
-      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
-      skip_past_new_line(&mem);
-
-      b3Quat rotation;
-      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
-                                            &rotation.v.y,
-                                            &rotation.v.z,
-                                            &rotation.s);
-      skip_past_new_line(&mem);
-
-      Vector3 scale;
-      sscanf(mem, "scale %f %f %f\n", &scale.x, &scale.y, &scale.z);
-      skip_past_new_line(&mem);
-
-      Color color;
-      color.a = 255;
-      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
-      skip_past_new_line(&mem);
-
-      i32 hp;
-      sscanf(mem, "hp %d\n", &hp);
-      skip_past_new_line(&mem);
-
-      enemy_spawn(position, scale, color);
-    } else if (!memcmp(mem, "[pebble]\n", 9)) {
-      mem += 9;
-      printf("found pebble\n");
-
-      b3Vec3 position;
-      sscanf(mem, "positon %f %f %f\n", &position.x, &position.y, &position.z);
-      skip_past_new_line(&mem);
-
-      b3Quat rotation;
-      sscanf(mem, "rotation %f %f %f %f\n", &rotation.v.x,
-                                            &rotation.v.y,
-                                            &rotation.v.z,
-                                            &rotation.s);
-      skip_past_new_line(&mem);
-
-      Color color;
-      color.a = 255;
-      sscanf(mem, "color %hhu %hhu %hhu\n", &color.r, &color.g, &color.b);
-      skip_past_new_line(&mem);
-
-      i32 hp;
-      sscanf(mem, "hp %d\n", &hp);
-      skip_past_new_line(&mem);
-
-      i32 damage;
-      sscanf(mem, "damage %d\n", &hp);
-      skip_past_new_line(&mem);
-
+    } else if (!memcmp(type_str, "OBJECT_TYPE_PEBBLE", 18)) {
       pebble_spawn(position, color);
-    } else {
-      mem += 1;
+    } else if (!memcmp(type_str, "OBJECT_TYPE_ENEMY", 17)) {
+      enemy_spawn(position, scale, color);
     }
   }
   munmap(mem, file_stat.st_size);
@@ -1289,87 +1193,61 @@ int main(void) {
             pebble_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, MAROON);
           }
 
-          char* type_str = "???";
-          switch (selected_object.type) {
-            case OBJECT_TYPE_NONE: type_str = "OBJECT_TYPE_NONE"; break;
-            case OBJECT_TYPE_PLAYER: {
-              type_str = "OBJECT_TYPE_PLAYER";
-              IMGUI_DRAG_FLOAT(player_speed, 0.0f, 1000.0f);
-              IMGUI_DRAG_FLOAT(player_friction, 0.0f, 30.0f);
-              IMGUI_DRAG_FLOAT(player_gravity_shoot_strength, 50.0f, 200.0f);
-              IMGUI_DRAG_FLOAT(player_dash_legth, 1.0f, 20.0f);
-              IMGUI_DRAG_FLOAT_001(player_dash_time, 0.001f, 0.5f);
-              IMGUI_DRAG_INT(player_dash_damage, 1, 100);
-              IMGUI_DRAG_FLOAT_001(player_slam_up_time,   0.01f, 1.0f);
-              IMGUI_DRAG_FLOAT_001(player_slam_hold_time, 0.01f, 1.0f);
-              IMGUI_DRAG_FLOAT_001(player_slam_down_time, 0.01f, 1.0f);
-              IMGUI_DRAG_FLOAT(player_slam_height, 1.0f, 100.0f);
-              IMGUI_DRAG_INT(player_slam_damage, 1, 100);
-              IMGUI_DRAG_FLOAT(player_slam_radius, 1.0f, 20.0f);
-            } break;
-            case OBJECT_TYPE_WALL: {
-              type_str = "OBJECT_TYPE_WALL";
-              Wall* wall = (Wall*)selected_object.object;
-              b3Vec3 position = b3Body_GetPosition(wall->body_id);
-              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
-                b3Body_SetTransform(wall->body_id, position, b3Body_GetRotation(wall->body_id));
-              }
-              if (igDragFloat3("scale", (f32*)&wall->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
-                b3BoxHull box = b3MakeBoxHull(wall->scale.x / 2.0f,
-                                              wall->scale.y / 2.0f,
-                                              wall->scale.z / 2.0f);
-                b3Shape_SetHull(wall->shape_id, &box.base);
-              }
-              IMGUI_EDIT_COLOR(wall->color);
+          if (selected_object) {
+            switch (selected_object->type) {
+              case OBJECT_TYPE_NONE: break;
+              case OBJECT_TYPE_PLAYER: {
+                IMGUI_DRAG_FLOAT(player_speed, 0.0f, 1000.0f);
+                IMGUI_DRAG_FLOAT(player_friction, 0.0f, 30.0f);
+                IMGUI_DRAG_FLOAT(player_gravity_shoot_strength, 50.0f, 200.0f);
+                IMGUI_DRAG_FLOAT(player_dash_legth, 1.0f, 20.0f);
+                IMGUI_DRAG_FLOAT_001(player_dash_time, 0.001f, 0.5f);
+                IMGUI_DRAG_INT(player_dash_damage, 1, 100);
+                IMGUI_DRAG_FLOAT_001(player_slam_up_time,   0.01f, 1.0f);
+                IMGUI_DRAG_FLOAT_001(player_slam_hold_time, 0.01f, 1.0f);
+                IMGUI_DRAG_FLOAT_001(player_slam_down_time, 0.01f, 1.0f);
+                IMGUI_DRAG_FLOAT(player_slam_height, 1.0f, 100.0f);
+                IMGUI_DRAG_INT(player_slam_damage, 1, 100);
+                IMGUI_DRAG_FLOAT(player_slam_radius, 1.0f, 20.0f);
+              } break;
+              default: {
+                const char *names[] = {
+                  "OBJECT_TYPE_NONE",
+                  "OBJECT_TYPE_PLAYER",
+                  "OBJECT_TYPE_WALL",
+                  "OBJECT_TYPE_PEBBLE",
+                  "OBJECT_TYPE_ENEMY",
+                };
+                igCombo_Str_arr("type", &selected_object->type, names, ARRAY_LEN(names), 0);
 
-              if (igButton("Remove", (ImVec2_c){0})) {
-                b3DestroyBody(wall->body_id);
-                fixed_array_remove(&walls, wall);
-                selected_object = (SelectedObject){0};
-              }
-            } break;
-            case OBJECT_TYPE_PEBBLE: {
-              type_str = "OBJECT_TYPE_PEBBLE";
-              Pebble* pebble = (Pebble*)selected_object.object;
-              b3Vec3 position = b3Body_GetPosition(pebble->body_id);
-              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
-                b3Body_SetTransform(pebble->body_id, position, b3Body_GetRotation(pebble->body_id));
-                b3Body_SetAwake(pebble->body_id, true);
-              }
-              IMGUI_EDIT_COLOR(pebble->color);
-              IMGUI_DRAG_INT(pebble->hp, 1, 100);
-              IMGUI_DRAG_INT(pebble->damage, 1, 100);
+                igValue_Int("body_id", *(u64*)&selected_object->body_id);
+                igValue_Int("shape_id", *(u64*)&selected_object->shape_id);
+                igValue_Int("sensor_shape_id", *(u64*)&selected_object->sensor_shape_id);
 
-              if (igButton("Remove", (ImVec2_c){0})) {
-                b3DestroyBody(pebble->body_id);
-                fixed_array_remove(&pebbles, pebble);
-                selected_object = (SelectedObject){0};
-              }
-            } break;
-            case OBJECT_TYPE_ENEMY: {
-              type_str = "OBJECT_TYPE_ENEMY";
-              Enemy* enemy = (Enemy*)selected_object.object;
-              b3Vec3 position = b3Body_GetPosition(enemy->body_id);
-              if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
-                b3Body_SetTransform(enemy->body_id, position, b3Body_GetRotation(enemy->body_id));
-              }
-              if (igDragFloat3("scale", (f32*)&enemy->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
-                b3BoxHull box = b3MakeBoxHull(enemy->scale.x / 2.0f,
-                                              enemy->scale.y / 2.0f,
-                                              enemy->scale.z / 2.0f);
-                b3Shape_SetHull(enemy->shape_id, &box.base);
-              }
-              IMGUI_EDIT_COLOR(enemy->color);
-              IMGUI_DRAG_INT(enemy->hp, 1, 100);
+                b3Vec3 position = b3Body_GetPosition(selected_object->body_id);
+                if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
+                  b3Body_SetTransform(selected_object->body_id, position,
+                                      b3Body_GetRotation(selected_object->body_id));
+                }
+                if (selected_object->type == OBJECT_TYPE_WALL) {
+                  if (igDragFloat3("scale", (f32*)&selected_object->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
+                    b3BoxHull box = b3MakeBoxHull(selected_object->scale.x / 2.0f,
+                                                  selected_object->scale.y / 2.0f,
+                                                  selected_object->scale.z / 2.0f);
+                    b3Shape_SetHull(selected_object->shape_id, &box.base);
+                  }
+                }
+                IMGUI_EDIT_COLOR(selected_object->color);
+                IMGUI_DRAG_INT(selected_object->hp, 1, 100);
+                IMGUI_DRAG_INT(selected_object->damage, 1, 100);
 
-              if (igButton("Remove", (ImVec2_c){0})) {
-                b3DestroyBody(enemy->body_id);
-                fixed_array_remove(&enemies, enemy);
-                selected_object = (SelectedObject){0};
-              }
-            } break;
+                if (igButton("Remove", (ImVec2_c){0})) {
+                  object_destroy(selected_object);
+                  selected_object = NULL;
+                }
+              } break;
+            }
           }
-          igLabelText("Hovering type:", type_str);
 
           igEnd();
         rlImGuiEnd();
