@@ -582,7 +582,7 @@ Object* pebble_spawn(b3Vec3 position, Color color) {
   return fixed_array_last_item(&objects);
 }
 
-void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
+Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
   body_def.position  = position;
@@ -606,6 +606,7 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
 }
 
 void enemy_create_model() {
@@ -613,7 +614,7 @@ void enemy_create_model() {
   enemy_model = LoadModelFromMesh(cube_mesh);
   enemy_model.materials[0].shader = mesh_shader;
 }
-void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
+Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_kinematicBody;
   body_def.position  = position;
@@ -641,6 +642,7 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
 }
 
 void turret_create_model() {
@@ -652,7 +654,7 @@ void turret_create_model() {
   turret_material.shader = mesh_shader;
   turret_material.maps[0].color = DARKGRAY;
 }
-void turret_spawn(b3Vec3 position, Color color) {
+Object* turret_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
   body_def.position  = position;
@@ -680,6 +682,7 @@ void turret_spawn(b3Vec3 position, Color color) {
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
 }
 
 void turrets_aim_and_shoot(f32 dt) {
@@ -894,6 +897,7 @@ void level_save() {
       case OBJECT_TYPE_WALL:    type_str = "OBJECT_TYPE_WALL";   break;
       case OBJECT_TYPE_PEBBLE:  type_str = "OBJECT_TYPE_PEBBLE"; break;
       case OBJECT_TYPE_ENEMY:   type_str = "OBJECT_TYPE_ENEMY";  break;
+      case OBJECT_TYPE_TURRET:  type_str = "OBJECT_TYPE_TURRET";  break;
     }
 
     i32 n = snprintf(buff, 128, "type %s\n", type_str);
@@ -917,6 +921,12 @@ void level_save() {
     write(fd, buff, n);
 
     n = snprintf(buff, 128, "damage %d\n", o->hp);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "attack_range %f\n", o->attack_range);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "attack_speed %f\n", o->attack_speed);
     write(fd, buff, n);
 
     write(fd, "\n", 1);
@@ -990,19 +1000,35 @@ void level_load() {
     sscanf(mem, "damage %d\n", &hp);
     skip_past_new_line(&mem);
 
+    f32 attack_range;
+    sscanf(mem, "attack_range %f\n", &attack_range);
+    skip_past_new_line(&mem);
+
+    f32 attack_speed;
+    sscanf(mem, "attack_speed %f\n", &attack_speed);
+    skip_past_new_line(&mem);
+
     mem += 1;
 
+    Object* object;
     if (!memcmp(type_str, "OBJECT_TYPE_NONE", 16)) {
 
     } else if (!memcmp(type_str, "OBJECT_TYPE_PLAYER", 18)) {
 
     } else if (!memcmp(type_str, "OBJECT_TYPE_WALL", 16)) {
-      wall_spawn(position, scale, color);
+      object = wall_spawn(position, scale, color);
     } else if (!memcmp(type_str, "OBJECT_TYPE_PEBBLE", 18)) {
-      pebble_spawn(position, color);
+      object = pebble_spawn(position, color);
     } else if (!memcmp(type_str, "OBJECT_TYPE_ENEMY", 17)) {
-      enemy_spawn(position, scale, color);
+      object = enemy_spawn(position, scale, color);
+    } else if (!memcmp(type_str, "OBJECT_TYPE_TURRET", 18)) {
+      object = turret_spawn(position, color);
     }
+
+    object->hp           = hp;
+    object->damage       = damage;
+    object->attack_range = attack_range;
+    object->attack_speed = attack_speed;
   }
   munmap(mem, file_stat.st_size);
   close(fd);
