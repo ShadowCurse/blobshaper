@@ -784,20 +784,15 @@ void draw_scene() {
         gun_position.y += 0.2;
         Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
 
-        // pitch
-        f32 a = player_position .y - gun_position.y;
-        f32 b = Vector3Length(Vector3Subtract(player_position, gun_position));
-        f32 pitch = PI / 2.0f - asin(a / b);
+        Vector3 forward = Vector3Normalize(Vector3Subtract(player_position, gun_position));
+        Vector3 right   = Vector3CrossProduct(forward, (Vector3){0.0f, 1.0f, 0.0f});
+        Vector3 up      = Vector3CrossProduct(right, forward);
+        Matrix m = {up.x, forward.x, right.x, gun_position.x,
+                    up.y, forward.y, right.y, gun_position.y,
+                    up.z, forward.z, right.z, gun_position.z,
+                    0.0f,      0.0f,    0.0f,           1.0f};
 
-        // yaw
-        f32 c = player_position .x - gun_position.x;
-        f32 d = player_position .z - gun_position.z;
-        f32 yaw = atan2(c, d);
-
-        DrawMesh(turret_gun_mesh,
-                 turret_material,
-                 MatrixMultiply(MatrixMultiply(MatrixRotateX(pitch), MatrixRotateY(yaw)),
-                                MatrixTranslate(gun_position.x, gun_position.y, gun_position.z)));
+        DrawMesh(turret_gun_mesh, turret_material, m);
       } break;
     }
   }
