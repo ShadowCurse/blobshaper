@@ -212,10 +212,12 @@ typedef struct {
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
   Vector3    scale;
-  Vector3    looking_at;
   Color      color;
   i32        hp;
   i32        damage;
+  f32        attack_range;
+  f32        attack_speed;
+  f32        attack_timer;
 } Object;
 
 Object* selected_object;
@@ -532,7 +534,7 @@ void pebble_create_model() {
   pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
   pebble_model = LoadModelFromMesh(player_mesh);
 }
-void pebble_spawn(b3Vec3 position, Color color) {
+Object* pebble_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type     = b3_dynamicBody;
   body_def.isBullet = true;
@@ -577,6 +579,7 @@ void pebble_spawn(b3Vec3 position, Color color) {
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
 }
 
 void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
@@ -671,9 +674,36 @@ void turret_spawn(b3Vec3 position, Color color) {
     .color           = color,
     .hp              = 50,
     .damage          = 10,
+    .attack_range    = 10.0f,
+    .attack_speed    = 1.0f,
+    .attack_timer    = 0.0f,
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+}
+
+void turrets_aim_and_shoot(f32 dt) {
+  Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* o = objects.items + i;
+    if (o->type == OBJECT_TYPE_TURRET) {
+      Vector3 body_position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+      Vector3 gun_position = body_position;
+      gun_position.y += 0.2;
+      Vector3 to_player = Vector3Subtract(player_position, gun_position);
+      f32 distance = Vector3Length(to_player);
+      if (distance < o->attack_range) {
+        o->attack_timer += dt;
+        if (o->attack_speed < o->attack_timer) {
+          o->attack_timer = 0;
+          to_player = Vector3Normalize(to_player);
+          Vector3 bullet_spawn_position = Vector3Add(gun_position, Vector3Scale(to_player, 1.5f));
+          Object* bullet = pebble_spawn(vec3_rl_to_b3v(bullet_spawn_position), WHITE);
+          b3Body_SetLinearVelocity(bullet->body_id, vec3_rl_to_b3v(Vector3Scale(to_player, 20.0f)));
+        }
+      }
+    }
+  }
 }
 
 void draw_scene() {
@@ -753,7 +783,7 @@ void draw_scene() {
 
         // pitch
         f32 a = player_position .y - gun_position.y;
-        f32 b = Vector3Length(Vector3Subtract(player_position , gun_position));
+        f32 b = Vector3Length(Vector3Subtract(player_position, gun_position));
         f32 pitch = PI / 2.0f - asin(a / b);
 
         // yaw
@@ -1177,6 +1207,7 @@ int main(void) {
       }
 
       player_update_gravity_objects_velocities(player_position);
+      turrets_aim_and_shoot(dt);
 
       if (game_mode == GAME_MODE_GAME) {
         camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
