@@ -203,6 +203,7 @@ typedef enum {
   OBJECT_TYPE_WALL,
   OBJECT_TYPE_PEBBLE,
   OBJECT_TYPE_ENEMY,
+  OBJECT_TYPE_TURRET,
 } ObjectType;
 
 typedef struct {
@@ -211,6 +212,7 @@ typedef struct {
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
   Vector3    scale;
+  Vector3    looking_at;
   Color      color;
   i32        hp;
   i32        damage;
@@ -234,6 +236,7 @@ typedef enum {
   PHYSICS_CATEGORY_LEVEL                = 1 << 3,
   PHYSICS_CATEGORY_PEBBLE               = 1 << 4,
   PHYSICS_CATEGORY_ENEMY                = 1 << 5,
+  PHYSICS_CATEGORY_TURRET               = 1 << 5,
 } PhysicsCategory;
 
 b3WorldId world_id;
@@ -288,6 +291,11 @@ Model pebble_model;
 
 Mesh  enemy_mesh;
 Model enemy_model;
+
+Mesh  turret_body_mesh;
+Model turret_body_model;
+Mesh  turret_gun_mesh;
+Material turret_material;
 
 Mesh     cube_mesh;
 Model    cube_model;
@@ -600,6 +608,7 @@ void wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
 void enemy_create_model() {
   enemy_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
   enemy_model = LoadModelFromMesh(cube_mesh);
+  enemy_model.materials[0].shader = mesh_shader;
 }
 void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
@@ -626,6 +635,42 @@ void enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
     .color           = color,
     .hp              = 20,
     .damage          = 5,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+}
+
+void turret_create_model() {
+  turret_body_mesh  = GenMeshSphere(0.5f, 32, 32);
+  turret_body_model = LoadModelFromMesh(turret_body_mesh);
+  turret_body_model.materials[0].shader = mesh_shader;
+  turret_gun_mesh   = GenMeshCylinder(0.1f, 1.0f, 32);
+  turret_material   = LoadMaterialDefault();
+  turret_material.shader = mesh_shader;
+  turret_material.maps[0].color = DARKGRAY;
+}
+void turret_spawn(b3Vec3 position, Color color) {
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.type      = b3_staticBody;
+  body_def.position  = position;
+  b3BodyId body_id   = b3CreateBody(world_id, &body_def);
+
+  b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.enableSensorEvents = true;
+  shape_def.filter.categoryBits = PHYSICS_CATEGORY_TURRET;
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PEBBLE;
+  b3Sphere sphere = {b3Vec3_zero, 0.5f};
+  b3ShapeId shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+
+  Object object = {
+    .type            = OBJECT_TYPE_TURRET,
+    .body_id         = body_id,
+    .shape_id        = shape_id,
+    .sensor_shape_id = 0,
+    .scale           = Vector3One(),
+    .color           = color,
+    .hp              = 50,
+    .damage          = 10,
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
@@ -695,6 +740,31 @@ void draw_scene() {
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
         Vector3 scale = o->scale;
         DrawModelEx(enemy_model, position, rotation_axis , 0.0f, scale, o->color);
+      } break;
+      case OBJECT_TYPE_TURRET: {
+        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+        Vector3 body_position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+        DrawModelEx(turret_body_model, body_position, rotation_axis , 0.0f, scale, o->color);
+
+        Vector3 gun_position = body_position;
+        gun_position.y += 0.2;
+        Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
+
+        // pitch
+        f32 a = player_position .y - gun_position.y;
+        f32 b = Vector3Length(Vector3Subtract(player_position , gun_position));
+        f32 pitch = PI / 2.0f - asin(a / b);
+
+        // yaw
+        f32 c = player_position .x - gun_position.x;
+        f32 d = player_position .z - gun_position.z;
+        f32 yaw = atan2(c, d);
+
+        DrawMesh(turret_gun_mesh,
+                 turret_material,
+                 MatrixMultiply(MatrixMultiply(MatrixRotateX(pitch), MatrixRotateY(yaw)),
+                                MatrixTranslate(gun_position.x, gun_position.y, gun_position.z)));
       } break;
     }
   }
@@ -928,9 +998,9 @@ int main(void) {
 
   camera_init_default(&free_camera);
   camera_init_default(&game_camera);
-  light_camera.position = (Vector3){-3.0f, 8.0f, 3.0f};
-  light_camera.target   = (Vector3){0.0f, 0.0f,  0.0f};
-  light_camera.up       = (Vector3){0.0f, 1.0f,  0.0f};
+  light_camera.position = (Vector3){-3.0f, 8.0f, -3.0f};
+  light_camera.target   = (Vector3){0.0f, 0.0f,   0.0f};
+  light_camera.up       = (Vector3){0.0f, 1.0f,   0.0f};
   light_camera.fovy     = 20.0f;
   light_camera.projection = CAMERA_ORTHOGRAPHIC;
 
@@ -984,6 +1054,10 @@ int main(void) {
   enemy_spawn((b3Vec3){0.0f, 1.0f, -5.0f},  (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
   enemy_spawn((b3Vec3){0.0f, 1.0f, -10.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
   enemy_spawn((b3Vec3){0.0f, 1.0f, -15.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
+
+  turret_create_model();
+  turret_spawn((b3Vec3){-5.0f, 0.5f,  0.0f}, BLACK);
+  turret_spawn((b3Vec3){-5.0f, 0.5f, -5.0f}, BLACK);
 
   while (!WindowShouldClose()) {
     f32 dt = GetFrameTime();
