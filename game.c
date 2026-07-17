@@ -170,9 +170,6 @@ bool imgui_wants_to_handle_events() {
 #define IMGUI_DRAG_FLOAT_001(var, min, max) \
   igDragFloat(#var, &var, 0.001f, min, max, NULL, 0);
 
-#define IMGUI_DRAG_INT(var, min, max) \
-  igDragInt(#var, &var, 1.0f, min, max, NULL, 0);
-
 #define IMGUI_EDIT_COLOR(c)             \
   f32 color[4] = {(f32)(c).r / 255.0f,  \
                   (f32)(c).g / 255.0f,  \
@@ -211,8 +208,8 @@ typedef struct {
   b3BodyId   body_id;
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
-  Vector3    scale;
   Vector3    rotation;
+  Vector3    scale;
   Color      color;
   i32        hp;
   i32        damage;
@@ -220,6 +217,9 @@ typedef struct {
   f32        attack_speed;
   f32        attack_timer;
   ObjectType type;
+  u32        id;
+  u32        activates_id;
+  bool       disabled;
 } Object;
 
 Object* selected_object;
@@ -601,6 +601,7 @@ Object* pebble_spawn(b3Vec3 position, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_PEBBLE,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = shape_id,
     .sensor_shape_id = sensor_shape_id,
@@ -628,6 +629,7 @@ Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_WALL,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = shape_id,
     .sensor_shape_id = 0,
@@ -659,6 +661,7 @@ Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_ENEMY,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = shape_id,
     .sensor_shape_id = 0,
@@ -688,6 +691,7 @@ Object* player_spawn_point_spawn(b3Vec3 position, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_PLAYER_SPAWN_POINT,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = 0,
     .sensor_shape_id = 0,//sensor_shape_id,
@@ -717,6 +721,7 @@ Object* button_spawn(b3Vec3 position, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_BUTTON,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = 0,
     .sensor_shape_id = sensor_shape_id,
@@ -745,6 +750,7 @@ Object* turret_spawn(b3Vec3 position, Color color) {
 
   Object object = {
     .type            = OBJECT_TYPE_TURRET,
+    .id              = *(u32*)&body_id,
     .body_id         = body_id,
     .shape_id        = shape_id,
     .sensor_shape_id = 0,
@@ -765,7 +771,7 @@ void turrets_aim_and_shoot(f32 dt) {
   Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
   for (i32 i = 0; i < objects.count; i += 1) {
     Object* o = objects.items + i;
-    if (o->type == OBJECT_TYPE_TURRET) {
+    if (o->type == OBJECT_TYPE_TURRET && !o->disabled) {
       Vector3 body_position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
       Vector3 gun_position = body_position;
       gun_position.y += 0.2;
@@ -870,19 +876,35 @@ void draw_scene() {
         Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 body_position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
         Vector3 scale = o->scale;
-        DrawModelEx(turret_body_model, body_position, rotation_axis , 0.0f, scale, o->color);
+
+        Color color = o->color;
+        if (o->disabled) {
+          color.r = 255;
+        }
+        DrawModelEx(turret_body_model, body_position, rotation_axis , 0.0f, scale, color);
 
         Vector3 gun_position = body_position;
         gun_position.y += 0.2;
-        Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
 
-        Vector3 forward = Vector3Normalize(Vector3Subtract(player_position, gun_position));
-        Vector3 right   = Vector3CrossProduct(forward, (Vector3){0.0f, 1.0f, 0.0f});
-        Vector3 up      = Vector3CrossProduct(right, forward);
-        Matrix m = {up.x, forward.x, right.x, gun_position.x,
-                    up.y, forward.y, right.y, gun_position.y,
-                    up.z, forward.z, right.z, gun_position.z,
-                    0.0f,      0.0f,    0.0f,           1.0f};
+        Matrix m;
+        Vector3 forward;
+        Vector3 right;
+        Vector3 up;
+        if (!o->disabled) {
+          Vector3 player_position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
+
+          forward = Vector3Normalize(Vector3Subtract(player_position, gun_position));
+          right   = Vector3CrossProduct(forward, (Vector3){0.0f, 1.0f, 0.0f});
+          up      = Vector3CrossProduct(right, forward);
+        } else {
+          forward = (Vector3){1.0f, 0.0f, 0.0f};
+          right   = (Vector3){0.0f, 0.0f, 1.0f};
+          up      = (Vector3){0.0f, 1.0f, 0.0f};
+        }
+        m = (Matrix){up.x, forward.x, right.x, gun_position.x,
+                     up.y, forward.y, right.y, gun_position.y,
+                     up.z, forward.z, right.z, gun_position.z,
+                     0.0f,      0.0f,    0.0f,           1.0f};
 
         DrawMesh(turret_gun_mesh, turret_material, m);
       } break;
@@ -949,6 +971,13 @@ void game_process_sensor_events() {
       } else if (o->type == OBJECT_TYPE_BUTTON) {
         if (B3_ID_EQUALS(event->sensorShapeId, o->sensor_shape_id)) {
           printf("button detected: %lu shape id %lu\n", *(u64*)&event->visitorShapeId);
+          for (i32 j = 0; j < objects.count; j += 1) {
+            Object* o2 = objects.items + j;
+            printf("checking object with id: %d agains %d\n", o2->id, o->activates_id);
+            if (o2->id == o->activates_id) {
+              o2->disabled = false;
+            }
+          }
         }
       }
     }
@@ -1014,6 +1043,15 @@ void level_save(void) {
     write(fd, buff, n);
 
     n = snprintf(buff, 128, "attack_speed %f\n", o->attack_speed);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "id %u\n", o->id);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "activates_id %u\n", o->activates_id);
+    write(fd, buff, n);
+
+    n = snprintf(buff, 128, "disabled %b\n", o->disabled);
     write(fd, buff, n);
 
     write(fd, "\n", 1);
@@ -1096,6 +1134,18 @@ void level_load(void) {
     sscanf(mem, "attack_speed %f\n", &attack_speed);
     skip_past_new_line(&mem);
 
+    u32 id;
+    sscanf(mem, "id %u\n", &id);
+    skip_past_new_line(&mem);
+
+    u32 activates_id;
+    sscanf(mem, "activates_id %u\n", &activates_id);
+    skip_past_new_line(&mem);
+
+    u8 disabled;
+    sscanf(mem, "disabled %hhu\n", &disabled);
+    skip_past_new_line(&mem);
+
     mem += 1;
 
     Object* object;
@@ -1126,6 +1176,9 @@ void level_load(void) {
     object->damage       = damage;
     object->attack_range = attack_range;
     object->attack_speed = attack_speed;
+    object->id           = id;
+    object->activates_id = activates_id;
+    object->disabled     = disabled;
   }
   munmap(mem, file_stat.st_size);
   close(fd);
@@ -1464,12 +1517,12 @@ int main(void) {
                 IMGUI_DRAG_FLOAT(player_gravity_shoot_strength, 50.0f, 200.0f);
                 IMGUI_DRAG_FLOAT(player_dash_legth, 1.0f, 20.0f);
                 IMGUI_DRAG_FLOAT_001(player_dash_time, 0.001f, 0.5f);
-                IMGUI_DRAG_INT(player_dash_damage, 1, 100);
+                igDragInt("dash damage", &player_dash_damage, 1, 1, 100, NULL, 0);
                 IMGUI_DRAG_FLOAT_001(player_slam_up_time,   0.01f, 1.0f);
                 IMGUI_DRAG_FLOAT_001(player_slam_hold_time, 0.01f, 1.0f);
                 IMGUI_DRAG_FLOAT_001(player_slam_down_time, 0.01f, 1.0f);
                 IMGUI_DRAG_FLOAT(player_slam_height, 1.0f, 100.0f);
-                IMGUI_DRAG_INT(player_slam_damage, 1, 100);
+                igDragInt("slam damage", &player_slam_damage, 1, 1, 100, NULL, 0);
                 IMGUI_DRAG_FLOAT(player_slam_radius, 1.0f, 20.0f);
               } break;
               default: {
@@ -1481,9 +1534,11 @@ int main(void) {
                   "OBJECT_TYPE_PEBBLE",
                   "OBJECT_TYPE_ENEMY",
                   "OBJECT_TYPE_TURRET",
+                  "OBJECT_TYPE_BUTTON",
                 };
                 igCombo_Str_arr("type", &selected_object->type, names, ARRAY_LEN(names), 0);
 
+                igValue_Int("id", selected_object->id);
                 igValue_Int("body_id", *(u64*)&selected_object->body_id);
                 igValue_Int("shape_id", *(u64*)&selected_object->shape_id);
                 igValue_Int("sensor_shape_id", *(u64*)&selected_object->sensor_shape_id);
@@ -1509,8 +1564,10 @@ int main(void) {
                   b3Body_SetTransform(selected_object->body_id, position, q);
                 }
                 IMGUI_EDIT_COLOR(selected_object->color);
-                IMGUI_DRAG_INT(selected_object->hp, 1, 100);
-                IMGUI_DRAG_INT(selected_object->damage, 1, 100);
+                igDragInt("hp", &selected_object->hp, 1, 1, 100, NULL, 0);
+                igDragInt("damage", &selected_object->damage, 1, 1, 100, NULL, 0);
+                igCheckbox("disabled", &selected_object->disabled);
+                igDragInt("activates_id", &selected_object->activates_id, 1, 1, 100, NULL, 0);
 
                 if (igButton("Remove", (ImVec2_c){0})) {
                   object_destroy(selected_object);
