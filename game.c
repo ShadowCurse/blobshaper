@@ -211,6 +211,7 @@ typedef struct {
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
   Vector3    scale;
+  Vector3    rotation;
   Color      color;
   i32        hp;
   i32        damage;
@@ -313,6 +314,7 @@ Material turret_material;
 
 Mesh     cube_mesh;
 Model    cube_model;
+Material wall_material;
 b3BodyId floor_body_id;
 
 void camera_follow_player(Camera* camera, Vector3 player_position) {
@@ -333,9 +335,18 @@ Vector3 camera_world_ray_cast(Camera camera) {
     Object* o = objects.items + i;
     if (o->type != OBJECT_TYPE_WALL) continue;
     b3Vec3 position = b3Body_GetPosition(o->body_id);
+    Vector3 scale = o->scale;
+
+    Matrix mx = MatrixRotateX(o->rotation.x);
+    Matrix my = MatrixRotateY(o->rotation.y);
+    Matrix mz = MatrixRotateZ(o->rotation.z);
     Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-    Matrix ms = MatrixScale(o->scale.x, o->scale.y, o->scale.z);
-    Matrix m  = MatrixMultiply(ms, mt);
+    Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
+
+    Matrix m = ms;
+    m = MatrixMultiply(m, MatrixMultiply(mx, MatrixMultiply(my, mz)));
+    m = MatrixMultiply(m, mt);
+
     collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
     if (collision.hit) {
       if (collision.distance < closest) {
@@ -784,10 +795,20 @@ void draw_scene() {
         DrawModelEx(player_spawn_point_model, position, rotation_axis , 0.0f, scale, o->color);
       } break;
       case OBJECT_TYPE_WALL: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
         Vector3 scale = o->scale;
-        DrawModelEx(cube_model, position, rotation_axis , 0.0f, scale, o->color);
+
+        Matrix mx = MatrixRotateX(o->rotation.x);
+        Matrix my = MatrixRotateY(o->rotation.y);
+        Matrix mz = MatrixRotateZ(o->rotation.z);
+        Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+        Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
+
+        Matrix m = ms;
+        m = MatrixMultiply(m, MatrixMultiply(mx, MatrixMultiply(my, mz)));
+        m = MatrixMultiply(m, mt);
+
+        DrawMesh(cube_mesh, wall_material, m);
       } break;
       case OBJECT_TYPE_PEBBLE: {
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
@@ -1117,6 +1138,9 @@ int main(void) {
   cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
   cube_model = LoadModelFromMesh(cube_mesh);
   cube_model.materials[0].shader = mesh_shader;
+  wall_material               = LoadMaterialDefault();
+  wall_material.shader        = mesh_shader;
+  wall_material.maps[0].color = BROWN;
 
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
@@ -1422,6 +1446,13 @@ int main(void) {
                                                   selected_object->scale.z / 2.0f);
                     b3Shape_SetHull(selected_object->shape_id, &box.base);
                   }
+                }
+                if (igDragFloat3("rotation", (f32*)&selected_object->rotation, 0.1f, -100.0f, 100.0f, NULL, 0)) {
+                  b3Quat qx = b3MakeQuatFromAxisAngle((b3Vec3){1.0f, 0.0f, 0.0f}, selected_object->rotation.x);
+                  b3Quat qy = b3MakeQuatFromAxisAngle((b3Vec3){0.0f, 1.0f, 0.0f}, selected_object->rotation.y);
+                  b3Quat qz = b3MakeQuatFromAxisAngle((b3Vec3){0.0f, 0.0f, 1.0f}, selected_object->rotation.z);
+                  b3Quat q = b3MulQuat(qx, b3MulQuat(qy, qz));
+                  b3Body_SetTransform(selected_object->body_id, position, q);
                 }
                 IMGUI_EDIT_COLOR(selected_object->color);
                 IMGUI_DRAG_INT(selected_object->hp, 1, 100);
