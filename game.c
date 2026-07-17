@@ -158,7 +158,6 @@ u32      game_slow_mode     = 1;
 Camera   free_camera;
 b3Vec3   player_resolved_positon;
 
-bool editor_wants_to_handle_events = false;
 bool imgui_wants_to_handle_events() {
   return imgui_io->WantCaptureMouse    ||
          imgui_io->WantCaptureKeyboard ||
@@ -197,9 +196,10 @@ bool input_right;
 f32  input_gamepad_axis_x;
 f32  input_gamepad_axis_y;
 
-typedef enum {
+typedef enum : u8 {
   OBJECT_TYPE_NONE,
   OBJECT_TYPE_PLAYER,
+  OBJECT_TYPE_PLAYER_SPAWN_POINT,
   OBJECT_TYPE_WALL,
   OBJECT_TYPE_PEBBLE,
   OBJECT_TYPE_ENEMY,
@@ -207,7 +207,6 @@ typedef enum {
 } ObjectType;
 
 typedef struct {
-  ObjectType type;
   b3BodyId   body_id;
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
@@ -218,6 +217,7 @@ typedef struct {
   f32        attack_range;
   f32        attack_speed;
   f32        attack_timer;
+  ObjectType type;
 } Object;
 
 Object* selected_object;
@@ -238,14 +238,15 @@ void object_take_damage(Object* o, i32 damage) {
   }
 }
 
-typedef enum {
+typedef enum : u32 {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
-  PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD = 1 << 1,
-  PHYSICS_CATEGORY_PLAYER_SLAM_FIELD    = 1 << 2,
-  PHYSICS_CATEGORY_LEVEL                = 1 << 3,
-  PHYSICS_CATEGORY_PEBBLE               = 1 << 4,
-  PHYSICS_CATEGORY_ENEMY                = 1 << 5,
-  PHYSICS_CATEGORY_TURRET               = 1 << 5,
+  PHYSICS_CATEGORY_PLAYER_SPAWN_POINT   = 1 << 1,
+  PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD = 1 << 2,
+  PHYSICS_CATEGORY_PLAYER_SLAM_FIELD    = 1 << 3,
+  PHYSICS_CATEGORY_LEVEL                = 1 << 4,
+  PHYSICS_CATEGORY_PEBBLE               = 1 << 5,
+  PHYSICS_CATEGORY_ENEMY                = 1 << 6,
+  PHYSICS_CATEGORY_TURRET               = 1 << 6,
 } PhysicsCategory;
 
 b3WorldId world_id;
@@ -293,8 +294,11 @@ FixedArrayImpl(b3BodyId, MAX_GRAVITY_BODIES);
 FixedArray(b3BodyId) player_gravity_bodies;
 f32                  player_gravity_orbit_distance = 1.1f;
 
-Mesh      player_mesh;
-Model     player_model;
+Mesh  player_mesh;
+Model player_model;
+
+Mesh  player_spawn_point_mesh;
+Model player_spawn_point_model;
 
 Mesh  pebble_mesh;
 Model pebble_model;
@@ -503,7 +507,12 @@ void player_move(Camera* camera, f32 dt) {
   capsule.center2 = b3Add(capsule.center2, safe_delta);
 
   FixedArray(b3CollisionPlane) collision_planes = {0};
-  b3World_CollideMover(world_id, player_position, &capsule, filter, player_collider_result_fn, &collision_planes);
+  b3World_CollideMover(world_id,
+                       player_position,
+                       &capsule,
+                       filter,
+                       player_collider_result_fn,
+                       &collision_planes);
 
   // TODO figure out how to avoid getting player into the collidiers
   b3PlaneSolverResult result = b3SolvePlanes(b3Vec3_zero, collision_planes.items, collision_planes.count);
@@ -511,6 +520,12 @@ void player_move(Camera* camera, f32 dt) {
 
   player_velocity = b3ClipVector(player_velocity, collision_planes.items, collision_planes.count);
   b3Body_SetLinearVelocity(player_body_id, player_velocity);
+}
+
+void player_move_to_spawn_point(Object* spawn_point) {
+  b3Vec3 position = b3Body_GetPosition(spawn_point->body_id);
+  position.y = 1.0f;
+  b3Body_SetTransform(player_body_id, position, b3Quat_identity);
 }
 
 void player_update_gravity_objects_velocities(b3Vec3 player_position) {
@@ -641,6 +656,35 @@ Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   return fixed_array_last_item(&objects);
 }
 
+Object* player_spawn_point_spawn(b3Vec3 position, Color color) {
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.type      = b3_staticBody;
+  body_def.position  = position;
+  b3BodyId body_id   = b3CreateBody(world_id, &body_def);
+
+  b3BoxHull box        = b3MakeBoxHull(0.5f, 0.1f, 0.5f);
+  b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.isSensor   = true;
+  shape_def.enableSensorEvents  = true;
+  shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER_SPAWN_POINT;
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER;
+  b3ShapeId sensor_shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
+
+  Object object = {
+    .type            = OBJECT_TYPE_PLAYER_SPAWN_POINT,
+    .body_id         = body_id,
+    .shape_id        = 0,
+    .sensor_shape_id = sensor_shape_id,
+    .scale           = Vector3One(),
+    .color           = color,
+    .hp              = 0,
+    .damage          = 0,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
+}
+
 Object* turret_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
@@ -733,6 +777,12 @@ void draw_scene() {
     switch (o->type) {
       case OBJECT_TYPE_NONE:   break;
       case OBJECT_TYPE_PLAYER: break;
+      case OBJECT_TYPE_PLAYER_SPAWN_POINT: {
+        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+        DrawModelEx(player_spawn_point_model, position, rotation_axis , 0.0f, scale, o->color);
+      } break;
       case OBJECT_TYPE_WALL: {
         Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
@@ -850,7 +900,7 @@ void game_process_sensor_events() {
 }
 
 char level_name[32] = {0};
-void level_save() {
+void level_save(void) {
   i32 fd = open(level_name, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
   if (fd <= 0) {
     perror("save level");
@@ -862,12 +912,13 @@ void level_save() {
     Object* o = objects.items + i;
     char* type_str = "???";
     switch (o->type) {
-      case OBJECT_TYPE_NONE:    type_str = "OBJECT_TYPE_NONE";   break;
-      case OBJECT_TYPE_PLAYER:  type_str = "OBJECT_TYPE_PLAYER"; break;
-      case OBJECT_TYPE_WALL:    type_str = "OBJECT_TYPE_WALL";   break;
-      case OBJECT_TYPE_PEBBLE:  type_str = "OBJECT_TYPE_PEBBLE"; break;
-      case OBJECT_TYPE_ENEMY:   type_str = "OBJECT_TYPE_ENEMY";  break;
-      case OBJECT_TYPE_TURRET:  type_str = "OBJECT_TYPE_TURRET";  break;
+      case OBJECT_TYPE_NONE:                type_str = "OBJECT_TYPE_NONE";               break;
+      case OBJECT_TYPE_PLAYER:              type_str = "OBJECT_TYPE_PLAYER";             break;
+      case OBJECT_TYPE_PLAYER_SPAWN_POINT:  type_str = "OBJECT_TYPE_PLAYER_SPAWN_POINT"; break;
+      case OBJECT_TYPE_WALL:                type_str = "OBJECT_TYPE_WALL";               break;
+      case OBJECT_TYPE_PEBBLE:              type_str = "OBJECT_TYPE_PEBBLE";             break;
+      case OBJECT_TYPE_ENEMY:               type_str = "OBJECT_TYPE_ENEMY";              break;
+      case OBJECT_TYPE_TURRET:              type_str = "OBJECT_TYPE_TURRET";             break;
     }
 
     i32 n = snprintf(buff, 128, "type %s\n", type_str);
@@ -909,7 +960,7 @@ void skip_past_new_line(char** mem) {
   while (**mem != '\n') *mem += 1;
   *mem += 1;
 }
-void level_load() {
+void level_load(void) {
   i32 fd = open(level_name, O_RDONLY, 0);
   if (fd < 0) {
     perror("load level");
@@ -982,18 +1033,25 @@ void level_load() {
     mem += 1;
 
     Object* object;
-    if (!memcmp(type_str, "OBJECT_TYPE_NONE", 16)) {
+    i32 str_len = strlen(type_str);
 
-    } else if (!memcmp(type_str, "OBJECT_TYPE_PLAYER", 18)) {
+#define IS_TYPE_STRING(s) (memcmp(type_str, #s, str_len < strlen(#s) ? strlen(#s) : str_len) == 0)
 
-    } else if (!memcmp(type_str, "OBJECT_TYPE_WALL", 16)) {
+    if (IS_TYPE_STRING(OBJECT_TYPE_NONE)) {
+
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_PLAYER)) {
+
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_WALL)) {
       object = wall_spawn(position, scale, color);
-    } else if (!memcmp(type_str, "OBJECT_TYPE_PEBBLE", 18)) {
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_PEBBLE)) {
       object = pebble_spawn(position, color);
-    } else if (!memcmp(type_str, "OBJECT_TYPE_ENEMY", 17)) {
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_ENEMY)) {
       object = enemy_spawn(position, scale, color);
-    } else if (!memcmp(type_str, "OBJECT_TYPE_TURRET", 18)) {
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_TURRET)) {
       object = turret_spawn(position, color);
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_PLAYER_SPAWN_POINT)) {
+      object = player_spawn_point_spawn(position, color);
+      player_move_to_spawn_point(object);
     }
 
     object->hp           = hp;
@@ -1036,6 +1094,10 @@ int main(void) {
   player_mesh  = GenMeshSphere(0.5f, 32, 32);
   player_model = LoadModelFromMesh(player_mesh);
   player_model.materials[0].shader = mesh_shader;
+
+  player_spawn_point_mesh  = GenMeshCube(1.0f, 0.2f, 1.0f);
+  player_spawn_point_model = LoadModelFromMesh(player_spawn_point_mesh);
+  player_spawn_point_model.materials[0].shader = mesh_shader;
 
   pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
   pebble_model = LoadModelFromMesh(player_mesh);
@@ -1085,7 +1147,7 @@ int main(void) {
   player_spawn();
 
   memcpy(level_name, "./levels/level_1.level", 22);
-  level_load(level_name);
+  level_load();
 
   // defaul level setup
   // pebble_spawn((b3Vec3){10.0f, 5.0f, -2.0f}, MAROON);
@@ -1132,26 +1194,22 @@ int main(void) {
       game_paused = !game_paused;
     }
 
-    editor_wants_to_handle_events = false;
     if (game_mode == GAME_MODE_EDITOR) {
       if (!imgui_wants_to_handle_events()) {
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-          editor_wants_to_handle_events = true;
           UpdateCamera(&free_camera, CAMERA_FREE);
           DisableCursor();
         }
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
           EnableCursor();
         }
-
         if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-          editor_wants_to_handle_events = true;
           selected_object = camera_ray_cast_object(free_camera);
         }
       }
     }
 
-    if (!imgui_wants_to_handle_events() && !editor_wants_to_handle_events) {
+    if (!imgui_wants_to_handle_events() && game_mode == GAME_MODE_GAME) {
       input_slam_key_pressed          = IsKeyPressed(KEY_SPACE) ||
                                         IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
       input_gravity_key_pressed       = IsKeyPressed(KEY_Q);
@@ -1312,6 +1370,12 @@ int main(void) {
           if (igButton("Add pebble", (ImVec2_c){0})) {
             pebble_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, MAROON);
           }
+          if (igButton("Add turret", (ImVec2_c){0})) {
+            turret_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, BLACK);
+          }
+          if (igButton("Add spawn point", (ImVec2_c){0})) {
+            player_spawn_point_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, BLUE);
+          }
 
           if (selected_object) {
             switch (selected_object->type) {
@@ -1334,9 +1398,11 @@ int main(void) {
                 const char *names[] = {
                   "OBJECT_TYPE_NONE",
                   "OBJECT_TYPE_PLAYER",
+                  "OBJECT_TYPE_PLAYER_SPAWN_POINT",
                   "OBJECT_TYPE_WALL",
                   "OBJECT_TYPE_PEBBLE",
                   "OBJECT_TYPE_ENEMY",
+                  "OBJECT_TYPE_TURRET",
                 };
                 igCombo_Str_arr("type", &selected_object->type, names, ARRAY_LEN(names), 0);
 
