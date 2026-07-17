@@ -202,6 +202,7 @@ typedef enum : u8 {
   OBJECT_TYPE_ENEMY,
   OBJECT_TYPE_TURRET,
   OBJECT_TYPE_BUTTON,
+  OBJECT_TYPE_KEY,
 } ObjectType;
 
 typedef struct {
@@ -231,9 +232,13 @@ FixedArray(Object) objects;
 void object_destroy(Object* o) {
   b3DestroyBody(o->body_id);
   fixed_array_remove(&objects, o);
+  if (selected_object == o) {
+    selected_object = NULL;
+  }
 }
 
 void object_take_damage(Object* o, i32 damage) {
+  printf("object id: %d takes %d damage\n", o->id, damage);
   o->hp -= damage;
   if (o->hp <= 0) {
     object_destroy(o);
@@ -248,8 +253,9 @@ typedef enum : u32 {
   PHYSICS_CATEGORY_LEVEL                = 1 << 4,
   PHYSICS_CATEGORY_PEBBLE               = 1 << 5,
   PHYSICS_CATEGORY_ENEMY                = 1 << 6,
-  PHYSICS_CATEGORY_TURRET               = 1 << 6,
-  PHYSICS_CATEGORY_BUTTON               = 1 << 6,
+  PHYSICS_CATEGORY_TURRET               = 1 << 7,
+  PHYSICS_CATEGORY_BUTTON               = 1 << 8,
+  PHYSICS_CATEGORY_KEY                  = 1 << 9,
 } PhysicsCategory;
 
 b3WorldId world_id;
@@ -292,6 +298,10 @@ b3ShapeId player_sensor_id;
 b3ShapeId player_gravity_sensor_id;
 b3Vec3    player_aim;
 
+#define MAX_COLLECTED_KEYS 4
+FixedArrayImpl(Color, MAX_COLLECTED_KEYS);
+FixedArray(Color) player_collected_keys;
+
 #define MAX_GRAVITY_BODIES 16
 FixedArrayImpl(b3BodyId, MAX_GRAVITY_BODIES);
 FixedArray(b3BodyId) player_gravity_bodies;
@@ -316,6 +326,9 @@ Material turret_material;
 
 Mesh  button_mesh;
 Model button_model;
+
+Mesh  key_mesh;
+Model key_model;
 
 Mesh     cube_mesh;
 Model    cube_model;
@@ -408,11 +421,12 @@ void player_spawn() {
     // main plyaer sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
-      // shape_def.baseMaterial.friction = 0.3f;
-      shape_def.isSensor              = true;
-      shape_def.enableSensorEvents    = true;
-      shape_def.filter.categoryBits   = PHYSICS_CATEGORY_PLAYER;
-      shape_def.filter.maskBits       = PHYSICS_CATEGORY_ENEMY;
+      shape_def.isSensor            = true;
+      shape_def.enableSensorEvents  = true;
+      shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
+      shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY  |
+                                      PHYSICS_CATEGORY_BUTTON |
+                                      PHYSICS_CATEGORY_KEY;
       b3Sphere sphere = {b3Vec3_zero, 0.55f};
       player_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
     }
@@ -735,6 +749,36 @@ Object* button_spawn(b3Vec3 position, Color color) {
   return fixed_array_last_item(&objects);
 }
 
+Object* key_spawn(b3Vec3 position, Color color) {
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.type      = b3_staticBody;
+  body_def.position  = position;
+  b3BodyId body_id   = b3CreateBody(world_id, &body_def);
+
+  b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.isSensor            = true;
+  shape_def.enableSensorEvents  = true;
+  shape_def.filter.categoryBits = PHYSICS_CATEGORY_KEY;
+  shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER;
+  b3Sphere sphere = {b3Vec3_zero, 0.5f};
+  b3ShapeId sensor_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
+
+  Object object = {
+    .type            = OBJECT_TYPE_KEY,
+    .id              = *(u32*)&body_id,
+    .body_id         = body_id,
+    .shape_id        = 0,
+    .sensor_shape_id = sensor_shape_id,
+    .scale           = Vector3One(),
+    .color           = color,
+    .hp              = 0,
+    .damage          = 0,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
+}
+
 Object* turret_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
@@ -815,6 +859,18 @@ void draw_scene() {
                      DARKGREEN);
 
     DrawCylinderWires(position, player_slam_radius, player_slam_radius, 1.0f, 32, ORANGE);
+
+    Vector3 keys_offset = position;
+    keys_offset.y += 1.0f;
+    Vector3 camera_forward = Vector3Normalize(Vector3Subtract(game_camera.target, game_camera.position));
+    Vector3 camera_right = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0});
+    keys_offset = Vector3Subtract(keys_offset,
+                                  Vector3Scale(camera_right, 0.5f * (player_collected_keys.count - 1)));
+    for (i32 i = 0; i < player_collected_keys.count; i += 1) {
+      Vector3 key_position = Vector3Add(keys_offset, Vector3Scale(camera_right, (f32)i));
+      Color color = *(player_collected_keys.items + i);
+      DrawModel(key_model, key_position, 1.0f, color);
+    }
   }
 
   // floor
@@ -914,6 +970,12 @@ void draw_scene() {
         Vector3 scale = o->scale;
         DrawModelEx(player_spawn_point_model, position, rotation_axis , 0.0f, scale, o->color);
       } break;
+      case OBJECT_TYPE_KEY: {
+        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+        DrawModelEx(key_model, position, rotation_axis , 0.0f, scale, o->color);
+      } break;
     }
   }
 
@@ -943,11 +1005,14 @@ void game_process_sensor_events() {
   for (i32 i = 0; i < events.beginCount; i += 1) {
     b3SensorBeginTouchEvent* event = events.beginEvents + i;
 
-    if (player_in_dash_mode && B3_ID_EQUALS(event->sensorShapeId, player_sensor_id)) {
+    if (B3_ID_EQUALS(event->sensorShapeId, player_sensor_id)) {
       b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-      Object* enemy = (Object*)b3Body_GetUserData(body_id);
-      if (enemy->type == OBJECT_TYPE_ENEMY) {
-        object_take_damage(enemy, player_dash_damage);
+      Object* o = (Object*)b3Body_GetUserData(body_id);
+      if (player_in_dash_mode && o->type == OBJECT_TYPE_ENEMY) {
+        object_take_damage(o, player_dash_damage);
+      } else if (o->type = OBJECT_TYPE_KEY) {
+        fixed_array_add(&player_collected_keys, o->color);
+        object_destroy(o);
       }
     }
 
@@ -970,10 +1035,8 @@ void game_process_sensor_events() {
         }
       } else if (o->type == OBJECT_TYPE_BUTTON) {
         if (B3_ID_EQUALS(event->sensorShapeId, o->sensor_shape_id)) {
-          printf("button detected: %lu shape id %lu\n", *(u64*)&event->visitorShapeId);
           for (i32 j = 0; j < objects.count; j += 1) {
             Object* o2 = objects.items + j;
-            printf("checking object with id: %d agains %d\n", o2->id, o->activates_id);
             if (o2->id == o->activates_id) {
               o2->disabled = false;
             }
@@ -1014,6 +1077,7 @@ void level_save(void) {
       case OBJECT_TYPE_ENEMY:               type_str = "OBJECT_TYPE_ENEMY";              break;
       case OBJECT_TYPE_TURRET:              type_str = "OBJECT_TYPE_TURRET";             break;
       case OBJECT_TYPE_BUTTON:              type_str = "OBJECT_TYPE_BUTTON";             break;
+      case OBJECT_TYPE_KEY:                 type_str = "OBJECT_TYPE_KEY";                break;
     }
 
     i32 n = snprintf(buff, 128, "type %s\n", type_str);
@@ -1091,6 +1155,7 @@ void level_load(void) {
   }
   fixed_array_clear(&objects);
   fixed_array_clear(&player_gravity_bodies);
+  fixed_array_clear(&player_collected_keys);
 
   char* end = mem + file_stat.st_size;
   while (mem < end) {
@@ -1170,6 +1235,8 @@ void level_load(void) {
       player_move_to_spawn_point(object);
     } else if (IS_TYPE_STRING(OBJECT_TYPE_BUTTON)) {
       object = button_spawn(position, color);
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_KEY)) {
+      object = key_spawn(position, color);
     }
 
     object->hp           = hp;
@@ -1236,8 +1303,12 @@ int main(void) {
   turret_material.maps[0].color = DARKGRAY;
 
   button_mesh  = GenMeshCube(1.0f, 0.2f, 1.0f);
-  button_model = LoadModelFromMesh(player_spawn_point_mesh);
+  button_model = LoadModelFromMesh(button_mesh);
   button_model.materials[0].shader = mesh_shader;
+
+  key_mesh  = GenMeshCube(0.2f, 0.2f, 0.2f);
+  key_model = LoadModelFromMesh(key_mesh);
+  key_model.materials[0].shader = mesh_shader;
 
   cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
   cube_model = LoadModelFromMesh(cube_mesh);
@@ -1506,6 +1577,9 @@ int main(void) {
           }
           if (igButton("Add button", (ImVec2_c){0})) {
             button_spawn((b3Vec3){0.0f, 0.5f, 0.0f}, RED);
+          }
+          if (igButton("Add key", (ImVec2_c){0})) {
+            key_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, GOLD);
           }
 
           if (selected_object) {
