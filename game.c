@@ -231,6 +231,13 @@ void object_destroy(Object* o) {
   fixed_array_remove(&objects, o);
 }
 
+void object_take_damage(Object* o, i32 damage) {
+  o->hp -= damage;
+  if (o->hp <= 0) {
+    object_destroy(o);
+  }
+}
+
 typedef enum {
   PHYSICS_CATEGORY_PLAYER               = 1 << 0,
   PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD = 1 << 1,
@@ -276,8 +283,6 @@ bool      player_in_slam_mode   = false;
 f32       player_slam_accumulate_time = 0.0f;
 bool      player_slam_finished  = false;
 
-Mesh      player_mesh;
-Model     player_model;
 b3BodyId  player_body_id;
 b3ShapeId player_dash_sensor_id;
 b3ShapeId player_gravity_sensor_id;
@@ -287,6 +292,9 @@ b3Vec3    player_aim;
 FixedArrayImpl(b3BodyId, MAX_GRAVITY_BODIES);
 FixedArray(b3BodyId) player_gravity_bodies;
 f32                  player_gravity_orbit_distance = 1.1f;
+
+Mesh      player_mesh;
+Model     player_model;
 
 Mesh  pebble_mesh;
 Model pebble_model;
@@ -371,23 +379,20 @@ Object* camera_ray_cast_object(Camera camera) {
 }
 
 void player_spawn() {
-  player_mesh = GenMeshSphere(0.5f, 32, 32);
-  player_model = LoadModelFromMesh(player_mesh);
-  player_model.materials[0].shader = mesh_shader;
   {
     b3BodyDef player_body_def = b3DefaultBodyDef();
-    player_body_def.type     = b3_kinematicBody;
-    player_body_def.position = (b3Vec3){0.0f, 3.0f, 0.0f};
+    player_body_def.type      = b3_kinematicBody;
+    player_body_def.position  = (b3Vec3){0.0f, 3.0f, 0.0f};
     player_body_id = b3CreateBody(world_id, &player_body_def);
 
     // dash sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
       shape_def.baseMaterial.friction = 0.3f;
-      shape_def.isSensor = true;
-      shape_def.enableSensorEvents = true;
-      shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
-      shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
+      shape_def.isSensor              = true;
+      shape_def.enableSensorEvents    = true;
+      shape_def.filter.categoryBits   = PHYSICS_CATEGORY_PLAYER;
+      shape_def.filter.maskBits       = PHYSICS_CATEGORY_ENEMY;
       b3Sphere sphere = {b3Vec3_zero, 0.55f};
       player_dash_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
     }
@@ -395,8 +400,8 @@ void player_spawn() {
     // gravity sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
-      shape_def.isSensor = true;
-      shape_def.enableSensorEvents = true;
+      shape_def.isSensor            = true;
+      shape_def.enableSensorEvents  = true;
       shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER_GRAVITY_FIELD;
       shape_def.filter.maskBits     = PHYSICS_CATEGORY_PEBBLE;
       b3Sphere sphere = {b3Vec3_zero, 2.0f};
@@ -530,10 +535,6 @@ void player_update_gravity_objects_velocities(b3Vec3 player_position) {
   }
 }
 
-void pebble_create_model() {
-  pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
-  pebble_model = LoadModelFromMesh(player_mesh);
-}
 Object* pebble_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type     = b3_dynamicBody;
@@ -609,11 +610,6 @@ Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
   return fixed_array_last_item(&objects);
 }
 
-void enemy_create_model() {
-  enemy_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
-  enemy_model = LoadModelFromMesh(cube_mesh);
-  enemy_model.materials[0].shader = mesh_shader;
-}
 Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_kinematicBody;
@@ -645,15 +641,6 @@ Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   return fixed_array_last_item(&objects);
 }
 
-void turret_create_model() {
-  turret_body_mesh  = GenMeshSphere(0.5f, 32, 32);
-  turret_body_model = LoadModelFromMesh(turret_body_mesh);
-  turret_body_model.materials[0].shader = mesh_shader;
-  turret_gun_mesh   = GenMeshCylinder(0.1f, 1.0f, 32);
-  turret_material   = LoadMaterialDefault();
-  turret_material.shader = mesh_shader;
-  turret_material.maps[0].color = DARKGRAY;
-}
 Object* turret_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
@@ -812,12 +799,8 @@ float slam_shape_cast_fn(
 ) {
   b3BodyId body_id = b3Shape_GetBody(shape_id);
   Object* enemy = (Object*)b3Body_GetUserData(body_id);
-  if (enemy ->type == OBJECT_TYPE_ENEMY) {
-    enemy->hp -= player_slam_damage;
-    printf("slam hit enemy. Remaining enemy hp: %d\n", enemy->hp);
-    if (enemy ->hp <= 0) {
-      object_destroy(enemy);
-    }
+  if (enemy->type == OBJECT_TYPE_ENEMY) {
+    object_take_damage(enemy, player_slam_damage);
   }
   return 1.0f;
 }
@@ -831,11 +814,7 @@ void game_process_sensor_events() {
       b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
       Object* enemy = (Object*)b3Body_GetUserData(body_id);
       if (enemy->type == OBJECT_TYPE_ENEMY) {
-        enemy->hp -= player_dash_damage;
-        printf("dash hit enemy. Remaining enemy hp: %d\n", enemy->hp);
-        if (enemy->hp <= 0) {
-          object_destroy(enemy);
-        }
+        object_take_damage(enemy, player_dash_damage);
       }
     }
 
@@ -851,14 +830,8 @@ void game_process_sensor_events() {
           b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
           Object* enemy = (Object*)b3Body_GetUserData(body_id);
           if (enemy->type == OBJECT_TYPE_ENEMY) {
-            enemy->hp -= pebble->damage;
-            pebble->hp -= 1;
-            printf("pebble hit enemy. Remaining enemy hp: %d. Remaining pebble hp: %d\n",
-                   enemy->hp,
-                   pebble->hp);
-            if (enemy->hp <= 0) {
-              object_destroy(enemy);
-            }
+            object_take_damage(enemy, pebble->damage);
+            object_take_damage(pebble, 1);
           }
           PlaySound(sound_pebble_impact);
         }
@@ -868,8 +841,10 @@ void game_process_sensor_events() {
   for (i32 i = 0; i < events.endCount; i += 1) {
     b3SensorEndTouchEvent* event = events.endEvents + i;
     if (B3_ID_EQUALS(event->sensorShapeId, player_gravity_sensor_id)) {
-      b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-      fixed_array_remove_body_id(&player_gravity_bodies, body_id);
+      if (b3Shape_IsValid(event->visitorShapeId)) {
+        b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
+        fixed_array_remove_body_id(&player_gravity_bodies, body_id);
+      }
     }
   }
 }
@@ -960,6 +935,7 @@ void level_load() {
     b3DestroyBody(o->body_id);
   }
   fixed_array_clear(&objects);
+  fixed_array_clear(&player_gravity_bodies);
 
   char* end = mem + file_stat.st_size;
   while (mem < end) {
@@ -1038,7 +1014,6 @@ int main(void) {
   // SetExitKey(KEY_NULL);
 
   rlImGuiSetup(true);
-
   imgui_io = igGetIO_Nil();
 
   sound_dash          = LoadSound("assets/sfx/dash.wav");
@@ -1047,20 +1022,8 @@ int main(void) {
   sound_pebble_throw  = LoadSound("assets/sfx/pebble_throw.wav");
   sound_slam          = LoadSound("assets/sfx/slam.wav");
 
-  camera_init_default(&free_camera);
-  camera_init_default(&game_camera);
-  light_camera.position = (Vector3){-3.0f, 8.0f, -3.0f};
-  light_camera.target   = (Vector3){0.0f, 0.0f,   0.0f};
-  light_camera.up       = (Vector3){0.0f, 1.0f,   0.0f};
-  light_camera.fovy     = 20.0f;
-  light_camera.projection = CAMERA_ORTHOGRAPHIC;
-
-  mesh_shader = LoadShader(
-      "shaders/mesh_vert.glsl",
-      "shaders/mesh_frag.glsl"
-  );
+  mesh_shader = LoadShader("shaders/mesh_vert.glsl", "shaders/mesh_frag.glsl");
   i32 ligth_pos_loc = GetShaderLocation(mesh_shader, "light_pos");
-  SetShaderValue(mesh_shader, ligth_pos_loc, &light_camera.position, SHADER_UNIFORM_VEC3);
   i32 shadow_map_loc = GetShaderLocation(mesh_shader, "shadow_map");
   i32 light_vp_loc   = GetShaderLocation(mesh_shader, "light_vp");
 
@@ -1070,21 +1033,42 @@ int main(void) {
   );
   RenderTexture2D depth_texture = create_depth_texture(DEPTH_TEXTURE_RESOLUTION, DEPTH_TEXTURE_RESOLUTION);
 
+  player_mesh  = GenMeshSphere(0.5f, 32, 32);
+  player_model = LoadModelFromMesh(player_mesh);
+  player_model.materials[0].shader = mesh_shader;
+
+  pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
+  pebble_model = LoadModelFromMesh(player_mesh);
+
+  enemy_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
+  enemy_model = LoadModelFromMesh(enemy_mesh);
+  enemy_model.materials[0].shader = mesh_shader;
+
+  turret_body_mesh  = GenMeshSphere(0.5f, 32, 32);
+  turret_body_model = LoadModelFromMesh(turret_body_mesh);
+  turret_body_model.materials[0].shader = mesh_shader;
+  turret_gun_mesh   = GenMeshCylinder(0.1f, 1.0f, 32);
+  turret_material   = LoadMaterialDefault();
+  turret_material.shader = mesh_shader;
+  turret_material.maps[0].color = DARKGRAY;
+
+  cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
+  cube_model = LoadModelFromMesh(cube_mesh);
+  cube_model.materials[0].shader = mesh_shader;
+
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
   world_id = b3CreateWorld(&world_def);
 
-  player_spawn();
+  camera_init_default(&free_camera);
+  camera_init_default(&game_camera);
+  light_camera.position = (Vector3){-3.0f, 8.0f, -3.0f};
+  light_camera.target   = (Vector3){0.0f, 0.0f,   0.0f};
+  light_camera.up       = (Vector3){0.0f, 1.0f,   0.0f};
+  light_camera.fovy     = 20.0f;
+  light_camera.projection = CAMERA_ORTHOGRAPHIC;
 
-  pebble_create_model();
-  pebble_spawn((b3Vec3){10.0f, 5.0f, -2.0f}, MAROON);
-  pebble_spawn((b3Vec3){10.0f, 5.0f, 0.0f},  PURPLE);
-  pebble_spawn((b3Vec3){10.0f, 5.0f, 2.0f},  DARKBROWN);
-
-  // level
-  cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
-  cube_model = LoadModelFromMesh(cube_mesh);
-  cube_model.materials[0].shader = mesh_shader;
+  // floor
   {
     b3BodyDef body_def = b3DefaultBodyDef();
     body_def.type      = b3_staticBody;
@@ -1097,18 +1081,27 @@ int main(void) {
     shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
     b3CreateHullShape(floor_body_id, &shape_def, &box.base);
   }
-  wall_spawn((b3Vec3){0.0f,  5.0f, -20.0f}, (Vector3){40.0f, 10.0f,  1.0f}, BROWN);
-  wall_spawn((b3Vec3){20.0f, 1.0f,   0.0f}, (Vector3){1.0f,   1.0f, 40.0f}, BROWN);
-  wall_spawn((b3Vec3){0.0f,  1.0f,  20.0f}, (Vector3){40.0f,  1.0f,  1.0f}, BROWN);
 
-  enemy_create_model();
-  enemy_spawn((b3Vec3){0.0f, 1.0f, -5.0f},  (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
-  enemy_spawn((b3Vec3){0.0f, 1.0f, -10.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
-  enemy_spawn((b3Vec3){0.0f, 1.0f, -15.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
+  player_spawn();
 
-  turret_create_model();
-  turret_spawn((b3Vec3){-5.0f, 0.5f,  0.0f}, BLACK);
-  turret_spawn((b3Vec3){-5.0f, 0.5f, -5.0f}, BLACK);
+  memcpy(level_name, "./levels/level_1.level", 22);
+  level_load(level_name);
+
+  // defaul level setup
+  // pebble_spawn((b3Vec3){10.0f, 5.0f, -2.0f}, MAROON);
+  // pebble_spawn((b3Vec3){10.0f, 5.0f, 0.0f},  PURPLE);
+  // pebble_spawn((b3Vec3){10.0f, 5.0f, 2.0f},  DARKBROWN);
+  //
+  // wall_spawn((b3Vec3){0.0f,  5.0f, -20.0f}, (Vector3){40.0f, 10.0f,  1.0f}, BROWN);
+  // wall_spawn((b3Vec3){20.0f, 1.0f,   0.0f}, (Vector3){1.0f,   1.0f, 40.0f}, BROWN);
+  // wall_spawn((b3Vec3){0.0f,  1.0f,  20.0f}, (Vector3){40.0f,  1.0f,  1.0f}, BROWN);
+  //
+  // enemy_spawn((b3Vec3){0.0f, 1.0f, -5.0f},  (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
+  // enemy_spawn((b3Vec3){0.0f, 1.0f, -10.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
+  // enemy_spawn((b3Vec3){0.0f, 1.0f, -15.0f}, (Vector3){0.85f, 1.0f, 0.85f}, (Color){200, 93, 82, 255});
+  //
+  // turret_spawn((b3Vec3){-10.0f, 0.5f,  0.0f}, BLACK);
+  // turret_spawn((b3Vec3){-10.0f, 0.5f, -5.0f}, BLACK);
 
   while (!WindowShouldClose()) {
     f32 dt = GetFrameTime();
@@ -1259,6 +1252,7 @@ int main(void) {
 
     light_view_proj = MatrixMultiply(light_view, light_proj);
     SetShaderValueMatrix(mesh_shader, light_vp_loc, light_view_proj);
+    SetShaderValue(mesh_shader, ligth_pos_loc, &light_camera.position, SHADER_UNIFORM_VEC3);
 
     BeginDrawing();
       ClearBackground(BLACK);
@@ -1309,7 +1303,7 @@ int main(void) {
             level_load();
           }
 
-          if (igButton("Add wall", (ImVec2_c){0})) {
+         if (igButton("Add wall", (ImVec2_c){0})) {
             wall_spawn((b3Vec3){0.0f,  1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, BROWN);
           }
           if (igButton("Add enemy", (ImVec2_c){0})) {
