@@ -154,6 +154,7 @@ RenderTexture2D create_depth_texture(int width, int height) {
 
 typedef enum {
   GAME_MODE_GAME,
+  GAME_MODE_GAMEOVER,
   GAME_MODE_EDITOR,
 } GameMode;
 GameMode game_mode          = GAME_MODE_GAME;
@@ -286,8 +287,8 @@ f32       player_speed    = 250.0f;
 f32       player_friction = 20.0f;
 f32       player_gravity_shoot_strength = 100.0f;
 
-f32       player_dash_legth = 5.0f;
-f32       player_dash_time  = 0.1f;
+f32       player_dash_legth   = 10.0f;
+f32       player_dash_time    = 0.1f;
 bool      player_in_dash_mode = false;
 f32       player_dash_dt      = 0.0f;
 i32       player_dash_damage  = 10;
@@ -304,6 +305,12 @@ bool      player_in_slam_mode   = false;
 f32       player_slam_accumulate_time = 0.0f;
 bool      player_slam_finished  = false;
 
+f32       player_inv_time       = 1.0f;
+f32       player_inv_dt         = 1.0f;
+bool      player_in_inv_mode    = 1.0f;
+
+i32       player_hp             = 3;
+
 b3BodyId  player_body_id;
 b3ShapeId player_sensor_id;
 b3ShapeId player_gravity_sensor_id;
@@ -317,6 +324,20 @@ FixedArray(Color) player_collected_keys;
 FixedArrayImpl(b3BodyId, MAX_GRAVITY_BODIES);
 FixedArray(b3BodyId) player_gravity_bodies;
 f32                  player_gravity_orbit_distance = 1.1f;
+
+void player_take_damage(Object* object) {
+  player_hp -= 1;
+  if (player_hp <= 0) {
+    // game_mode = GAME_MODE_GAMEOVER;
+    printf("game over\n");
+  }
+  player_in_inv_mode = true;
+
+  b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+  b3Vec3 object_position = b3Body_GetPosition(object->body_id);
+  b3Vec3 to_player = b3Normalize(b3Sub(player_position, object_position));
+  b3Body_SetLinearVelocity(player_body_id, b3MulSV(50.0f, to_player));
+}
 
 Mesh  player_mesh;
 Model player_model;
@@ -434,7 +455,7 @@ void player_spawn() {
 
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
-      shape_def.enableSensorEvents  = true;
+      // shape_def.enableSensorEvents  = true;
       shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
       shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY  |
                                       PHYSICS_CATEGORY_BUTTON |
@@ -472,6 +493,14 @@ void player_spawn() {
 }
 
 void player_move(Camera* camera, f32 dt) {
+  if (player_in_inv_mode) {
+    player_inv_dt += dt;
+    if (player_inv_time < player_inv_dt) {
+      player_in_inv_mode = false;
+      player_inv_dt = 0.0f;
+    }
+  }
+
   Vector3 camera_forward = Vector3Normalize(Vector3Subtract(camera->target,
                                                             camera->position));
   Vector3 player_right_rl   = Vector3CrossProduct(camera_forward, (Vector3){0.0f, 1.0f, 0.0f});
@@ -689,7 +718,7 @@ Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
 
 Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
-  body_def.type      = b3_kinematicBody;
+  body_def.type      = b3_dynamicBody;
   body_def.position  = position;
   b3BodyId body_id   = b3CreateBody(world_id, &body_def);
 
@@ -700,7 +729,8 @@ Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
   shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER            |
                                   PHYSICS_CATEGORY_PLAYER_SLAM_FIELD |
                                   PHYSICS_CATEGORY_LEVEL             |
-                                  PHYSICS_CATEGORY_PEBBLE;
+                                  PHYSICS_CATEGORY_PEBBLE            |
+                                  PHYSICS_CATEGORY_ENEMY;
   b3ShapeId shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
 
   Object object = {
@@ -711,12 +741,28 @@ Object* enemy_spawn(b3Vec3 position, Vector3 scale, Color color) {
     .sensor_shape_id = 0,
     .scale           = scale,
     .color           = color,
-    .hp              = 20,
+    .hp              = 100,
     .damage          = 5,
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
   return fixed_array_last_item(&objects);
+}
+
+void enemy_move() {
+  b3Vec3 player_position = b3Body_GetPosition(player_body_id);
+  for (i32 i = 0; i < objects.count; i += 1) {
+    Object* enemy = objects.items + i;
+    if (enemy->type == OBJECT_TYPE_ENEMY) {
+      b3Vec3 enemy_position = b3Body_GetPosition(enemy->body_id);
+      b3Vec3 to_player = b3Sub(player_position, enemy_position);
+      f32 distance;
+      b3Vec3 direction = b3GetLengthAndNormalize(&distance, to_player);
+      if (distance <= 5.0f) {
+        b3Body_SetLinearVelocity(enemy->body_id, b3MulSV(2.0f, direction));
+      }
+    }
+  }
 }
 
 Object* player_spawn_point_spawn(b3Vec3 position, Color color) {
@@ -949,7 +995,11 @@ void draw_scene() {
     b3Quat rotation = b3Body_GetRotation(player_body_id);
     f32 angle;
     Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
-    DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, GOLD);
+    Color color = GOLD;
+    if (player_in_inv_mode) {
+      color = BLUE;
+    }
+    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, color);
     DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){4.0f, 4.0f, 4.0f}, MAGENTA);
 
     DrawLine3D(position, vec3_b3v_to_rl(player_dash_target), RED);
@@ -1127,8 +1177,14 @@ void game_process_sensor_events() {
     if (B3_ID_EQUALS(event->sensorShapeId, player_sensor_id)) {
       b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
       Object* o = (Object*)b3Body_GetUserData(body_id);
-      if (player_in_dash_mode && o->type == OBJECT_TYPE_ENEMY) {
-        object_take_damage(o, player_dash_damage);
+      if (o->type == OBJECT_TYPE_ENEMY) {
+        if (player_in_dash_mode) {
+          object_take_damage(o, player_dash_damage);
+        } else {
+          if (!player_in_inv_mode) {
+            player_take_damage(o);
+          }
+        }
       } else if (o->type == OBJECT_TYPE_KEY) {
         fixed_array_add(&player_collected_keys, o->color);
         object_destroy(o);
@@ -1480,7 +1536,9 @@ int main(void) {
     b3BoxHull box  = b3MakeBoxHull(20.0f, 0.5f, 20.0f);
     b3ShapeDef shape_def = b3DefaultShapeDef();
     shape_def.filter.categoryBits = PHYSICS_CATEGORY_LEVEL;
-    shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER |
+                                    PHYSICS_CATEGORY_PEBBLE |
+                                    PHYSICS_CATEGORY_ENEMY;
     b3CreateHullShape(floor_body_id, &shape_def, &box.base);
   }
 
@@ -1620,6 +1678,7 @@ int main(void) {
 
       player_update_gravity_objects_velocities(player_position);
       turrets_aim_and_shoot(dt);
+      enemy_move();
 
       if (game_mode == GAME_MODE_GAME) {
         camera_follow_player(&game_camera, vec3_b3p_to_rl(player_position));
