@@ -88,6 +88,12 @@ f32 rad_to_degree(f32 rad) {
   (array)->items[item_index] = (array)->items[(array)->count - 1]; \
   (array)->count -= 1;
 
+#define fixed_array_remove_index(array, item_index )               \
+  i32 array_len = ARRAY_LEN((array)->items);                       \
+  assert(item_index < array_len);                                  \
+  (array)->items[item_index] = (array)->items[(array)->count - 1]; \
+  (array)->count -= 1;
+
 #define fixed_array_remove_body_id(array, body_id)            \
   for (i32 i = 0; i < (array)->count; i += 1) {               \
     if (B3_ID_EQUALS((array)->items[i], body_id)) {           \
@@ -203,12 +209,15 @@ typedef enum : u8 {
   OBJECT_TYPE_TURRET,
   OBJECT_TYPE_BUTTON,
   OBJECT_TYPE_KEY,
+  OBJECT_TYPE_GATE,
 } ObjectType;
 
 typedef struct {
   b3BodyId   body_id;
   b3ShapeId  shape_id;
   b3ShapeId  sensor_shape_id;
+  b3BodyId   ground_id;
+  b3JointId  joint_id;
   Vector3    rotation;
   Vector3    scale;
   Color      color;
@@ -256,6 +265,8 @@ typedef enum : u32 {
   PHYSICS_CATEGORY_TURRET               = 1 << 7,
   PHYSICS_CATEGORY_BUTTON               = 1 << 8,
   PHYSICS_CATEGORY_KEY                  = 1 << 9,
+  PHYSICS_CATEGORY_GATE                 = 1 << 10,
+  PHYSICS_CATEGORY_GATE_SENSOR          = 1 << 11,
 } PhysicsCategory;
 
 b3WorldId world_id;
@@ -271,7 +282,7 @@ Sound sound_pebble_impact;
 Sound sound_pebble_throw;
 Sound sound_slam;
 
-f32       player_speed    = 500.0f;
+f32       player_speed    = 250.0f;
 f32       player_friction = 20.0f;
 f32       player_gravity_shoot_strength = 100.0f;
 
@@ -329,6 +340,9 @@ Model button_model;
 
 Mesh  key_mesh;
 Model key_model;
+
+Mesh  gate_mesh;
+Model gate_model;
 
 Mesh     cube_mesh;
 Model    cube_model;
@@ -418,7 +432,19 @@ void player_spawn() {
     player_body_def.position  = (b3Vec3){0.0f, 3.0f, 0.0f};
     player_body_id = b3CreateBody(world_id, &player_body_def);
 
-    // main plyaer sensor
+    {
+      b3ShapeDef shape_def = b3DefaultShapeDef();
+      shape_def.enableSensorEvents  = true;
+      shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
+      shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY  |
+                                      PHYSICS_CATEGORY_BUTTON |
+                                      PHYSICS_CATEGORY_KEY    |
+                                      PHYSICS_CATEGORY_GATE;
+      b3Sphere sphere = {b3Vec3_zero, 0.55f};
+      b3CreateSphereShape(player_body_id, &shape_def, &sphere);
+    }
+
+    // main player sensor
     {
       b3ShapeDef shape_def = b3DefaultShapeDef();
       shape_def.isSensor            = true;
@@ -426,7 +452,8 @@ void player_spawn() {
       shape_def.filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
       shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY  |
                                       PHYSICS_CATEGORY_BUTTON |
-                                      PHYSICS_CATEGORY_KEY;
+                                      PHYSICS_CATEGORY_KEY    |
+                                      PHYSICS_CATEGORY_GATE_SENSOR;
       b3Sphere sphere = {b3Vec3_zero, 0.55f};
       player_sensor_id = b3CreateSphereShape(player_body_id, &shape_def, &sphere);
     }
@@ -521,7 +548,8 @@ void player_move(Camera* camera, f32 dt) {
   b3QueryFilter filter = b3DefaultQueryFilter();
   filter.categoryBits = PHYSICS_CATEGORY_PLAYER;
   filter.maskBits     = PHYSICS_CATEGORY_LEVEL |
-                        PHYSICS_CATEGORY_ENEMY;
+                        PHYSICS_CATEGORY_ENEMY |
+                        PHYSICS_CATEGORY_GATE;
   if (player_in_dash_mode) {
     filter.maskBits &= ~PHYSICS_CATEGORY_ENEMY;
   }
@@ -779,6 +807,79 @@ Object* key_spawn(b3Vec3 position, Color color) {
   return fixed_array_last_item(&objects);
 }
 
+Object* gate_spawn(b3Vec3 position, b3Quat rotation, Color color) {
+  b3BodyDef body_def = b3DefaultBodyDef();
+  body_def.rotation  = rotation;
+
+  b3BodyId ground_id = b3CreateBody(world_id, &body_def);
+
+  body_def.position  = position;
+  body_def.rotation  = rotation;
+  body_def.type      = b3_dynamicBody;
+  b3BodyId body_id   = b3CreateBody(world_id, &body_def);
+
+  b3ShapeId shape_id;
+  {
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.filter.categoryBits = PHYSICS_CATEGORY_GATE;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER;
+
+    b3BoxHull box = b3MakeBoxHull(0.75f, 1.0f, 0.125f);
+    shape_id      = b3CreateHullShape(body_id, &shape_def, &box.base);
+  }
+
+  b3ShapeId sensor_shape_id;
+  {
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.isSensor            = true;
+    shape_def.enableSensorEvents  = true;
+    shape_def.filter.categoryBits = PHYSICS_CATEGORY_GATE_SENSOR;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER;
+    b3BoxHull box   = b3MakeBoxHull(0.75f, 1.0f, 0.5f);
+    sensor_shape_id = b3CreateHullShape(body_id, &shape_def, &box.base);
+  }
+
+  b3Quat axis_quat = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisZ, b3Vec3_axisY );
+  b3Vec3 offset = { -0.75f, 0.0f, 0.0f };
+
+  b3RevoluteJointDef joint_def = b3DefaultRevoluteJointDef();
+  joint_def.base.bodyIdA = ground_id;
+  joint_def.base.bodyIdB = body_id;
+  joint_def.base.localFrameA.p = b3ToVec3(b3Add(body_def.position, offset));
+  joint_def.base.localFrameA.q = axis_quat;
+  joint_def.base.localFrameB.p = offset;
+  joint_def.base.localFrameB.q = axis_quat;
+
+  joint_def.enableLimit = true;
+  joint_def.lowerAngle = 0.0f; // on activation becomes -PI / 2.0f;
+  joint_def.upperAngle = 0.0f; // on activation becomes  PI / 2.0f;
+  joint_def.enableSpring = true;
+  joint_def.hertz = 1.0f;
+  joint_def.dampingRatio = 0.5f;
+  joint_def.enableMotor = false;
+  joint_def.maxMotorTorque = 100.0f;
+  joint_def.base.drawScale = 2.0f;
+
+  b3JointId joint_id = b3CreateRevoluteJoint(world_id, &joint_def);
+
+  Object object = {
+    .type            = OBJECT_TYPE_GATE,
+    .id              = *(u32*)&body_id,
+    .body_id         = body_id,
+    .shape_id        = shape_id,
+    .sensor_shape_id = sensor_shape_id,
+    .ground_id       = ground_id,
+    .joint_id        = joint_id,
+    .scale           = Vector3One(),
+    .color           = color,
+    .hp              = 0,
+    .damage          = 0,
+  };
+  fixed_array_add(&objects, object);
+  b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
+  return fixed_array_last_item(&objects);
+}
+
 Object* turret_spawn(b3Vec3 position, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
@@ -976,6 +1077,22 @@ void draw_scene() {
         Vector3 scale = o->scale;
         DrawModelEx(key_model, position, rotation_axis , 0.0f, scale, o->color);
       } break;
+      case OBJECT_TYPE_GATE: {
+        Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
+        Vector3 scale = o->scale;
+
+        b3Quat rotation = b3Body_GetRotation(o->body_id);
+        Matrix mr = QuaternionToMatrix(*(Quaternion*)&rotation);
+
+        Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+        Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
+
+        Matrix m = ms;
+        m = MatrixMultiply(m, mr);
+        m = MatrixMultiply(m, mt);
+
+        DrawMesh(gate_mesh, wall_material, m);
+      } break;
     }
   }
 
@@ -1010,7 +1127,7 @@ void game_process_sensor_events() {
       Object* o = (Object*)b3Body_GetUserData(body_id);
       if (player_in_dash_mode && o->type == OBJECT_TYPE_ENEMY) {
         object_take_damage(o, player_dash_damage);
-      } else if (o->type = OBJECT_TYPE_KEY) {
+      } else if (o->type == OBJECT_TYPE_KEY) {
         fixed_array_add(&player_collected_keys, o->color);
         object_destroy(o);
       }
@@ -1039,6 +1156,18 @@ void game_process_sensor_events() {
             Object* o2 = objects.items + j;
             if (o2->id == o->activates_id) {
               o2->disabled = false;
+            }
+          }
+        }
+      } else if (o->type == OBJECT_TYPE_GATE) {
+        if (B3_ID_EQUALS(event->sensorShapeId, o->sensor_shape_id)) {
+          for (i32 j = 0; j < player_collected_keys.count; j += 1) {
+            Color c = *(player_collected_keys.items + j);
+            if (ColorIsEqual(c, o->color)) {
+              PlaySound(sound_jump);
+              b3RevoluteJoint_SetLimits(o->joint_id, -PI / 2.0f, PI / 2.0f);
+              fixed_array_remove_index(&player_collected_keys, j);
+              break;
             }
           }
         }
@@ -1078,6 +1207,7 @@ void level_save(void) {
       case OBJECT_TYPE_TURRET:              type_str = "OBJECT_TYPE_TURRET";             break;
       case OBJECT_TYPE_BUTTON:              type_str = "OBJECT_TYPE_BUTTON";             break;
       case OBJECT_TYPE_KEY:                 type_str = "OBJECT_TYPE_KEY";                break;
+      case OBJECT_TYPE_GATE:                type_str = "OBJECT_TYPE_GATE";               break;
     }
 
     i32 n = snprintf(buff, 128, "type %s\n", type_str);
@@ -1237,6 +1367,8 @@ void level_load(void) {
       object = button_spawn(position, color);
     } else if (IS_TYPE_STRING(OBJECT_TYPE_KEY)) {
       object = key_spawn(position, color);
+    } else if (IS_TYPE_STRING(OBJECT_TYPE_GATE)) {
+      object = gate_spawn(position, rotation, color);
     }
 
     object->hp           = hp;
@@ -1309,6 +1441,10 @@ int main(void) {
   key_mesh  = GenMeshCube(0.2f, 0.2f, 0.2f);
   key_model = LoadModelFromMesh(key_mesh);
   key_model.materials[0].shader = mesh_shader;
+
+  gate_mesh  = GenMeshCube(1.5f, 2.0f, 0.25f);
+  gate_model = LoadModelFromMesh(gate_mesh);
+  gate_model.materials[0].shader = mesh_shader;
 
   cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
   cube_model = LoadModelFromMesh(cube_mesh);
@@ -1581,6 +1717,9 @@ int main(void) {
           if (igButton("Add key", (ImVec2_c){0})) {
             key_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, GOLD);
           }
+          if (igButton("Add gate", (ImVec2_c){0})) {
+            gate_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, b3Quat_identity, GOLD);
+          }
 
           if (selected_object) {
             switch (selected_object->type) {
@@ -1609,6 +1748,8 @@ int main(void) {
                   "OBJECT_TYPE_ENEMY",
                   "OBJECT_TYPE_TURRET",
                   "OBJECT_TYPE_BUTTON",
+                  "OBJECT_TYPE_KEY",
+                  "OBJECT_TYPE_GATE",
                 };
                 igCombo_Str_arr("type", &selected_object->type, names, ARRAY_LEN(names), 0);
 
@@ -1621,6 +1762,10 @@ int main(void) {
                 if (igDragFloat3("position", (f32*)&position, 0.5f, -100.0f, 100.0f, NULL, 0)) {
                   b3Body_SetTransform(selected_object->body_id, position,
                                       b3Body_GetRotation(selected_object->body_id));
+                  if (selected_object->type == OBJECT_TYPE_GATE) {
+                    b3Body_SetTransform(selected_object->ground_id, b3Sub(position, (b3Vec3){0.0f, 1.0f, 0.0f}),
+                                        b3Body_GetRotation(selected_object->body_id));
+                  }
                 }
                 if (selected_object->type == OBJECT_TYPE_WALL) {
                   if (igDragFloat3("scale", (f32*)&selected_object->scale, 1.0f, 0.0f, 100.0f, NULL, 0)) {
@@ -1636,6 +1781,11 @@ int main(void) {
                   b3Quat qz = b3MakeQuatFromAxisAngle((b3Vec3){0.0f, 0.0f, 1.0f}, selected_object->rotation.z);
                   b3Quat q = b3MulQuat(qx, b3MulQuat(qy, qz));
                   b3Body_SetTransform(selected_object->body_id, position, q);
+                  if (selected_object->type == OBJECT_TYPE_GATE) {
+                    b3Body_SetTransform(selected_object->ground_id,
+                                        b3Sub(position, (b3Vec3){0.0f, 1.0f, 0.0f}),
+                                        q);
+                  }
                 }
                 IMGUI_EDIT_COLOR(selected_object->color);
                 igDragInt("hp", &selected_object->hp, 1, 1, 100, NULL, 0);
