@@ -636,7 +636,7 @@ Object* pebble_spawn(b3Vec3 position, Color color) {
     shape_def.isSensor = true;
     shape_def.enableSensorEvents  = true;
     shape_def.filter.categoryBits = PHYSICS_CATEGORY_PEBBLE;
-    shape_def.filter.maskBits     = PHYSICS_CATEGORY_ENEMY;
+    shape_def.filter.maskBits     = PHYSICS_CATEGORY_LEVEL | PHYSICS_CATEGORY_ENEMY;
     b3Sphere sphere = {b3Vec3_zero, 0.25f};
     sensor_shape_id = b3CreateSphereShape(body_id, &shape_def, &sphere);
   }
@@ -665,6 +665,7 @@ Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
 
   b3BoxHull box        = b3MakeBoxHull(scale.x / 2.0f, scale.y / 2.0f, scale.z / 2.0f);
   b3ShapeDef shape_def = b3DefaultShapeDef();
+  shape_def.enableSensorEvents  = true;
   shape_def.filter.categoryBits = PHYSICS_CATEGORY_LEVEL;
   shape_def.filter.maskBits     = PHYSICS_CATEGORY_PLAYER | PHYSICS_CATEGORY_PEBBLE;
   b3ShapeId shape_id   = b3CreateHullShape(body_id , &shape_def, &box.base);
@@ -679,6 +680,7 @@ Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
     .color           = color,
     .hp              = 0,
     .damage          = 0,
+    .disabled        = true,
   };
   fixed_array_add(&objects, object);
   b3Body_SetUserData(body_id, fixed_array_last_item(&objects));
@@ -1143,9 +1145,12 @@ void game_process_sensor_events() {
       if (o->type == OBJECT_TYPE_PEBBLE) {
         if (B3_ID_EQUALS(event->sensorShapeId, o->sensor_shape_id)) {
           b3BodyId body_id = b3Shape_GetBody(event->visitorShapeId);
-          Object* enemy = (Object*)b3Body_GetUserData(body_id);
-          if (enemy->type == OBJECT_TYPE_ENEMY) {
-            object_take_damage(enemy, o->damage);
+          Object* other = (Object*)b3Body_GetUserData(body_id);
+          if (other->type == OBJECT_TYPE_ENEMY) {
+            object_take_damage(other, o->damage);
+            object_take_damage(o, 1);
+          } else if (other->type == OBJECT_TYPE_WALL && other->disabled == false) {
+            object_take_damage(other, o->damage);
             object_take_damage(o, 1);
           }
           PlaySound(sound_pebble_impact);
