@@ -12,9 +12,11 @@
 #include "rlgl.h"
 #include "raymath.h"
 
+#ifndef RELEASE
 #include "rlImGui.h"
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
+#endif
 
 #include "box3d/box3d.h"
 
@@ -159,17 +161,33 @@ typedef enum {
 } GameMode;
 GameMode game_mode          = GAME_MODE_GAME;
 bool     game_show_debug_ui = true;
+
+#ifndef RELEASE
 ImGuiIO* imgui_io;
+#endif
+
 u8       game_paused        = false;
 u32      game_slow_mode     = 1;
 Camera   free_camera;
 b3Vec3   player_resolved_positon;
 
+typedef enum : u8 {
+  RENDERING_MODE_NORMAL         = 1 << 0,
+  RENDERING_MODE_PHYSICS_DEBUG  = 1 << 1,
+} RenderingMode;
+#ifdef RELEASE
+RenderingMode rendering_mode = RENDERING_MODE_NORMAL;
+#else
+RenderingMode rendering_mode = RENDERING_MODE_NORMAL | RENDERING_MODE_PHYSICS_DEBUG;
+#endif
+
+#ifndef RELEASE
 bool imgui_wants_to_handle_events() {
   return imgui_io->WantCaptureMouse    ||
          imgui_io->WantCaptureKeyboard ||
          imgui_io->WantTextInput;
 }
+#endif
 
 #define IMGUI_DRAG_FLOAT(var, min, max) \
   igDragFloat(#var, &var, 1.0f, min, max, NULL, 0);
@@ -219,7 +237,6 @@ typedef struct {
   b3ShapeId  sensor_shape_id;
   b3BodyId   ground_id;
   b3JointId  joint_id;
-  Vector3    rotation;
   Vector3    scale;
   Color      color;
   i32        hp;
@@ -283,6 +300,10 @@ Sound sound_pebble_impact;
 Sound sound_pebble_throw;
 Sound sound_slam;
 
+
+Object    player_object = {.type = OBJECT_TYPE_PLAYER};
+Vector3   player_camera_offset = {-0.5f, 11.0f, 0.0f};
+
 f32       player_speed    = 250.0f;
 f32       player_friction = 20.0f;
 f32       player_gravity_shoot_strength = 100.0f;
@@ -339,39 +360,41 @@ void player_take_damage(Object* object) {
   b3Body_SetLinearVelocity(player_body_id, b3MulSV(50.0f, to_player));
 }
 
+Material default_material;
+
 Mesh  player_mesh;
-Model player_model;
+// Model player_model;
 
 Mesh  player_spawn_point_mesh;
-Model player_spawn_point_model;
+// Model player_spawn_point_model;
 
 Mesh  pebble_mesh;
-Model pebble_model;
+// Model pebble_model;
 
 Mesh  enemy_mesh;
-Model enemy_model;
+// Model enemy_model;
 
 Mesh  turret_body_mesh;
-Model turret_body_model;
+// Model turret_body_model;
 Mesh  turret_gun_mesh;
-Material turret_material;
+// Material turret_material;
 
 Mesh  button_mesh;
-Model button_model;
+// Model button_model;
 
 Mesh  key_mesh;
-Model key_model;
+// Model key_model;
 
 Mesh  gate_mesh;
-Model gate_model;
+// Model gate_model;
 
 Mesh     cube_mesh;
-Model    cube_model;
-Material wall_material;
+// Model    cube_model;
+// Material wall_material;
 b3BodyId floor_body_id;
 
 void camera_follow_player(Camera* camera, Vector3 player_position) {
-  camera->position = Vector3Add(player_position, (Vector3){-3.0f, 8.0f, 3.0f});
+  camera->position = Vector3Add(player_position, player_camera_offset);
   camera->target = player_position;
 }
 
@@ -390,14 +413,13 @@ Vector3 camera_world_ray_cast(Camera camera) {
     b3Vec3 position = b3Body_GetPosition(o->body_id);
     Vector3 scale = o->scale;
 
-    Matrix mx = MatrixRotateX(o->rotation.x);
-    Matrix my = MatrixRotateY(o->rotation.y);
-    Matrix mz = MatrixRotateZ(o->rotation.z);
+    b3Quat rotation = b3Body_GetRotation(o->body_id);
+    Matrix mr = QuaternionToMatrix(*(Quaternion*)&rotation);
     Matrix mt = MatrixTranslate(position.x, position.y, position.z);
     Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
 
     Matrix m = ms;
-    m = MatrixMultiply(m, MatrixMultiply(mx, MatrixMultiply(my, mz)));
+    m = MatrixMultiply(m, mr);
     m = MatrixMultiply(m, mt);
 
     collision = GetRayCollisionMesh(to_mouse_ray, cube_mesh, m);
@@ -416,17 +438,17 @@ Object* camera_ray_cast_object(Camera camera) {
   Ray to_mouse_ray = GetScreenToWorldRay(GetMousePosition(), camera);
   f32 closest = 100000000000.0f;
 
-  // {
-  //   b3Vec3 position = b3Body_GetPosition(player_body_id);
-  //   Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-  //   RayCollision collision = GetRayCollisionMesh(to_mouse_ray, player_mesh, mt);
-  //   if (collision.hit) {
-  //     if (collision.distance < closest) {
-  //       closest = collision.distance;
-  //       result = NULL;
-  //     }
-  //   }
-  // }
+  {
+    b3Vec3 position = b3Body_GetPosition(player_body_id);
+    Matrix mt = MatrixTranslate(position.x, position.y, position.z);
+    RayCollision collision = GetRayCollisionMesh(to_mouse_ray, player_mesh, mt);
+    if (collision.hit) {
+      if (collision.distance < closest) {
+        closest = collision.distance;
+        result = &player_object;
+      }
+    }
+  }
 
   for (i32 i = 0; i < objects.count; i += 1) {
     Object* o = objects.items + i;
@@ -555,20 +577,19 @@ void player_move(Camera* camera, f32 dt) {
         f32 rising_velocity = player_slam_height / player_slam_up_time;
         player_velocity.y = rising_velocity;
       }
-    } else {
-      acceleration = b3Normalize(acceleration);
-
-      f32 speed = player_speed;
-      if (player_in_slam_mode) {
-        speed /= 3.0f;
-      }
-      acceleration = b3MulSV(speed, acceleration);
-      acceleration.x -= player_friction * player_velocity.x;
-      acceleration.z -= player_friction * player_velocity.z;
-      player_velocity = b3Add(player_velocity, b3MulSV(dt, acceleration));
-      // gravity
-      player_velocity.y -= 10.0f * dt;
     }
+    acceleration = b3Normalize(acceleration);
+
+    f32 speed = player_speed;
+    if (player_in_slam_mode) {
+      speed /= 3.0f;
+    }
+    acceleration = b3MulSV(speed, acceleration);
+    acceleration.x -= player_friction * player_velocity.x;
+    acceleration.z -= player_friction * player_velocity.z;
+    player_velocity = b3Add(player_velocity, b3MulSV(dt, acceleration));
+    // gravity
+    player_velocity.y -= 10.0f * dt;
   }
 
   b3Vec3 player_translation = b3MulSV(dt, player_velocity);
@@ -686,10 +707,11 @@ Object* pebble_spawn(b3Vec3 position, Color color) {
   return fixed_array_last_item(&objects);
 }
 
-Object* wall_spawn(b3Vec3 position, Vector3 scale, Color color) {
+Object* wall_spawn(b3Vec3 position, b3Quat rotation, Vector3 scale, Color color) {
   b3BodyDef body_def = b3DefaultBodyDef();
   body_def.type      = b3_staticBody;
   body_def.position  = position;
+  body_def.rotation  = rotation;
   b3BodyId body_id   = b3CreateBody(world_id, &body_def);
 
   b3BoxHull box        = b3MakeBoxHull(scale.x / 2.0f, scale.y / 2.0f, scale.z / 2.0f);
@@ -856,13 +878,16 @@ Object* key_spawn(b3Vec3 position, Color color) {
 }
 
 Object* gate_spawn(b3Vec3 position, b3Quat rotation, Color color) {
-  b3BodyDef body_def = b3DefaultBodyDef();
-  body_def.rotation  = rotation;
+  b3Vec3 axis_neg_x = b3RotateVector(rotation, (b3Vec3){-1.0f, -1.0f, 0.0f});
 
+  b3BodyDef body_def = b3DefaultBodyDef();
+  b3Vec3 ground_position = b3Add(position, axis_neg_x);
+
+  body_def.position  = ground_position;
+  body_def.rotation  = rotation;
   b3BodyId ground_id = b3CreateBody(world_id, &body_def);
 
   body_def.position  = position;
-  body_def.rotation  = rotation;
   body_def.type      = b3_dynamicBody;
   b3BodyId body_id   = b3CreateBody(world_id, &body_def);
 
@@ -888,12 +913,12 @@ Object* gate_spawn(b3Vec3 position, b3Quat rotation, Color color) {
   }
 
   b3Quat axis_quat = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisZ, b3Vec3_axisY );
-  b3Vec3 offset = { -0.75f, 0.0f, 0.0f };
+  b3Vec3 offset = { -0.75f, -1.0f, 0.0f };
 
   b3RevoluteJointDef joint_def = b3DefaultRevoluteJointDef();
   joint_def.base.bodyIdA = ground_id;
   joint_def.base.bodyIdB = body_id;
-  joint_def.base.localFrameA.p = b3ToVec3(b3Add(body_def.position, offset));
+  joint_def.base.localFrameA.p = (b3Vec3){0};
   joint_def.base.localFrameA.q = axis_quat;
   joint_def.base.localFrameB.p = offset;
   joint_def.base.localFrameB.q = axis_quat;
@@ -901,6 +926,8 @@ Object* gate_spawn(b3Vec3 position, b3Quat rotation, Color color) {
   joint_def.enableLimit = true;
   joint_def.lowerAngle = 0.0f; // on activation becomes -PI / 2.0f;
   joint_def.upperAngle = 0.0f; // on activation becomes  PI / 2.0f;
+  // joint_def.lowerAngle = -PI / 2.0f;
+  // joint_def.upperAngle =  PI / 2.0f;
   joint_def.enableSpring = true;
   joint_def.hertz = 1.0f;
   joint_def.dampingRatio = 0.5f;
@@ -985,33 +1012,29 @@ void turrets_aim_and_shoot(f32 dt) {
 }
 
 void draw_scene() {
+#ifndef RELEASE
   DrawCube((Vector3){1.0f, 0.5f, 0.0f}, 2.0f, 0.1f, 0.1f, RED);
   DrawCube((Vector3){0.0f, 1.5f, 0.0f}, 0.1f, 2.0f, 0.1f, GREEN);
   DrawCube((Vector3){0.0f, 0.5f, 1.0f}, 0.1f, 0.1f, 2.0f, BLUE);
+#endif
 
   // player
   {
     Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(player_body_id));
-    b3Quat rotation = b3Body_GetRotation(player_body_id);
-    f32 angle;
-    Vector3 axis = vec3_b3v_to_rl(b3GetAxisAngle(&angle, rotation));
     Color color = GOLD;
     if (player_in_inv_mode) {
       color = BLUE;
     }
-    DrawModelEx(player_model, position, axis, rad_to_degree(angle), (Vector3){1.0f, 1.0f, 1.0f}, color);
-    DrawModelWiresEx(player_model, position, axis, rad_to_degree(angle), (Vector3){4.0f, 4.0f, 4.0f}, MAGENTA);
+    Matrix m = MatrixTranslate(position.x, position.y, position.z);
+    default_material.maps[MATERIAL_MAP_DIFFUSE].color = color;
+    DrawMesh(player_mesh, default_material, m);
 
-    DrawLine3D(position, vec3_b3v_to_rl(player_dash_target), RED);
-
-    DrawModelWiresEx(player_model,
-                     vec3_b3p_to_rl(player_resolved_positon),
-                     axis,
-                     rad_to_degree(angle),
-                     (Vector3){1.0f, 1.0f, 1.0f},
-                     DARKGREEN);
-
-    DrawCylinderWires(position, player_slam_radius, player_slam_radius, 1.0f, 32, ORANGE);
+    if (b3Shape_AreSensorEventsEnabled(player_gravity_sensor_id)) {
+      default_material.maps[MATERIAL_MAP_DIFFUSE].color = MAGENTA;
+      default_material.maps[MATERIAL_MAP_DIFFUSE].color.a = 255;
+      m = MatrixMultiply(m, MatrixScale(4.0f, 4.0f, 4.0f));
+      DrawMesh(player_mesh, default_material, m);
+    }
 
     Vector3 keys_offset = position;
     keys_offset.y += 1.0f;
@@ -1022,42 +1045,42 @@ void draw_scene() {
     for (i32 i = 0; i < player_collected_keys.count; i += 1) {
       Vector3 key_position = Vector3Add(keys_offset, Vector3Scale(camera_right, (f32)i));
       Color color = *(player_collected_keys.items + i);
-      DrawModel(key_model, key_position, 1.0f, color);
+      Matrix m = MatrixTranslate(key_position.x, key_position.y, key_position.z);
+      default_material.maps[MATERIAL_MAP_DIFFUSE].color = color;
+      DrawMesh(key_mesh, default_material, m);
     }
   }
 
   // floor
-  Vector3 floor_rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
-  Vector3 floor_position = vec3_b3p_to_rl(b3Body_GetPosition(floor_body_id));
-  Vector3 floor_scale = (Vector3){40.0f, 1.0f, 40.0f};
-  DrawModelEx(cube_model, floor_position, floor_rotation_axis , 0.0f, floor_scale, GRAY);
+  default_material.maps[MATERIAL_MAP_DIFFUSE].color = GRAY;
+  DrawMesh(cube_mesh, default_material, MatrixScale(40.0f, 1.0f, 40.0f));
 
   for (i32 i = 0; i < objects.count; i += 1) {
-    Object* o = objects.items + i;
+   Object* o = objects.items + i;
     switch (o->type) {
       case OBJECT_TYPE_NONE:   break;
       case OBJECT_TYPE_PLAYER: break;
       case OBJECT_TYPE_PLAYER_SPAWN_POINT: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
-        DrawModelEx(player_spawn_point_model, position, rotation_axis , 0.0f, scale, o->color);
+        Matrix m = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z),
+                                  MatrixScale(o->scale.x, o->scale.y, o->scale.z));
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(player_spawn_point_mesh, default_material, m);
       } break;
       case OBJECT_TYPE_WALL: {
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
 
-        Matrix mx = MatrixRotateX(o->rotation.x);
-        Matrix my = MatrixRotateY(o->rotation.y);
-        Matrix mz = MatrixRotateZ(o->rotation.z);
+        b3Quat rotation = b3Body_GetRotation(o->body_id);
+        Matrix mr = QuaternionToMatrix(*(Quaternion*)&rotation);
         Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-        Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
+        Matrix ms = MatrixScale(o->scale.x, o->scale.y, o->scale.z);
 
         Matrix m = ms;
-        m = MatrixMultiply(m, MatrixMultiply(mx, MatrixMultiply(my, mz)));
+        m = MatrixMultiply(m, mr);
         m = MatrixMultiply(m, mt);
 
-        DrawMesh(cube_mesh, wall_material, m);
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(cube_mesh, default_material, m);
       } break;
       case OBJECT_TYPE_PEBBLE: {
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
@@ -1070,32 +1093,31 @@ void draw_scene() {
           color.a /= 2;
         }
 
-        DrawModelEx(pebble_model, position, axis, rad_to_degree(angle), (Vector3){0.5f, 0.5f, 0.5f}, color);
-
-        Vector3 velocity = vec3_b3p_to_rl(b3Body_GetLinearVelocity(o->body_id));
-        DrawLine3D(position, Vector3Add(position, velocity), LIME);
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = color;
+        DrawMesh(pebble_mesh, default_material, MatrixTranslate(position.x, position.y, position.z));
       } break;
       case OBJECT_TYPE_ENEMY: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
-        DrawModelEx(enemy_model, position, rotation_axis , 0.0f, scale, o->color);
+        Matrix m = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z),
+                                  MatrixScale(o->scale.x, o->scale.y, o->scale.z));
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(enemy_mesh, default_material, m);
       } break;
       case OBJECT_TYPE_TURRET: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 body_position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
 
         Color color = o->color;
         if (o->disabled) {
           color.r = 255;
         }
-        DrawModelEx(turret_body_model, body_position, rotation_axis , 0.0f, scale, color);
+        Matrix m = MatrixMultiply(MatrixTranslate(body_position.x, body_position.y, body_position.z),
+                                  MatrixScale(o->scale.x, o->scale.y, o->scale.z));
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = color;
+        DrawMesh(turret_body_mesh, default_material, m);
 
         Vector3 gun_position = body_position;
         gun_position.y += 0.2;
 
-        Matrix m;
         Vector3 forward;
         Vector3 right;
         Vector3 up;
@@ -1115,40 +1137,48 @@ void draw_scene() {
                      up.z, forward.z, right.z, gun_position.z,
                      0.0f,      0.0f,    0.0f,           1.0f};
 
-        DrawMesh(turret_gun_mesh, turret_material, m);
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = DARKGRAY;
+        DrawMesh(turret_gun_mesh, default_material, m);
       } break;
       case OBJECT_TYPE_BUTTON: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
-        DrawModelEx(player_spawn_point_model, position, rotation_axis , 0.0f, scale, o->color);
+
+        Matrix m = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z),
+                                  MatrixScale(o->scale.x, o->scale.y, o->scale.z));
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(button_mesh, default_material, m);
+
       } break;
       case OBJECT_TYPE_KEY: {
-        Vector3 rotation_axis = (Vector3){0.0f, 1.0f, 0.0f};
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
-        DrawModelEx(key_model, position, rotation_axis , 0.0f, scale, o->color);
+
+        Matrix m = MatrixMultiply(MatrixTranslate(position.x, position.y, position.z),
+                                  MatrixScale(o->scale.x, o->scale.y, o->scale.z));
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(key_mesh, default_material, m);
       } break;
       case OBJECT_TYPE_GATE: {
         Vector3 position = vec3_b3p_to_rl(b3Body_GetPosition(o->body_id));
-        Vector3 scale = o->scale;
 
         b3Quat rotation = b3Body_GetRotation(o->body_id);
         Matrix mr = QuaternionToMatrix(*(Quaternion*)&rotation);
 
         Matrix mt = MatrixTranslate(position.x, position.y, position.z);
-        Matrix ms = MatrixScale(scale.x, scale.y, scale.z);
+        Matrix ms = MatrixScale(o->scale.x, o->scale.y, o->scale.z);
 
         Matrix m = ms;
         m = MatrixMultiply(m, mr);
         m = MatrixMultiply(m, mt);
 
-        DrawMesh(gate_mesh, wall_material, m);
+        default_material.maps[MATERIAL_MAP_DIFFUSE].color = o->color;
+        DrawMesh(gate_mesh, default_material, m);
       } break;
     }
   }
 
+#ifndef RELEASE
   DrawSphere(vec3_b3v_to_rl(player_aim), 0.2, BLUE);
+#endif
 }
 
 float slam_shape_cast_fn(
@@ -1414,7 +1444,7 @@ void level_load(void) {
     } else if (IS_TYPE_STRING(OBJECT_TYPE_PLAYER)) {
 
     } else if (IS_TYPE_STRING(OBJECT_TYPE_WALL)) {
-      object = wall_spawn(position, scale, color);
+      object = wall_spawn(position, rotation, scale, color);
     } else if (IS_TYPE_STRING(OBJECT_TYPE_PEBBLE)) {
       object = pebble_spawn(position, color);
     } else if (IS_TYPE_STRING(OBJECT_TYPE_ENEMY)) {
@@ -1444,6 +1474,113 @@ void level_load(void) {
   close(fd);
 }
 
+typedef struct {
+  bool is_sphere;
+  union {
+    f32 radius;
+    b3AABB aabb;
+  };
+} DebugShape;
+FixedArrayImpl(DebugShape, 64);
+FixedArray(DebugShape) debug_shapes;
+
+void* create_debug_shape_callback(const b3DebugShape* debugShape, void* userContext) {
+  printf("create_debug_shape_callback: %d\n", debugShape->type);
+  DebugShape debug_shape;
+  if (debugShape->type == b3_sphereShape) {
+    debug_shape = (DebugShape){
+      .is_sphere = true,
+      .radius =  debugShape->sphere->radius,
+    };
+  } else {
+    debug_shape = (DebugShape){
+      .is_sphere = false,
+      .aabb =  debugShape->hull->aabb,
+    };
+  }
+  fixed_array_add(&debug_shapes, debug_shape)
+  return fixed_array_last_item(&debug_shapes);
+}
+void destroy_debug_shape_callback(void* userShape, void* userContext) {
+  fixed_array_remove(&debug_shapes, (DebugShape*)userShape)
+}
+
+bool debug_draw_shape(void* userShape, b3WorldTransform transform, b3HexColor hex_color, void* context) {
+  DebugShape* shape = userShape;
+
+  Vector3 position = *(Vector3*)&transform.p;
+
+  Color color;
+  color.r = hex_color & 0xff0000 >> 16;
+  color.g = hex_color & 0x00ff00 >> 8;
+  color.b = hex_color & 0x0000ff >> 0;
+  color.a = 255;
+
+  if (shape->is_sphere) {
+    DrawSphereWires(position, shape->radius, 32, 32, color);
+  } else {
+    b3AABB* aabb = &shape->aabb;
+    // Vector3 position = {
+    //   (aabb->lowerBound.x + aabb->upperBound.x) / 2.0f,
+    //   (aabb->lowerBound.y + aabb->upperBound.y) / 2.0f,
+    //   (aabb->lowerBound.z + aabb->upperBound.z) / 2.0f,
+    // };
+    f32 width  = aabb->upperBound.x - aabb->lowerBound.x;
+    f32 height = aabb->upperBound.y - aabb->lowerBound.y;
+    f32 length = aabb->upperBound.z - aabb->lowerBound.z;
+    DrawCubeWires(position, width, height, length, color);
+  }
+  return true;
+}
+
+void draw_segment(b3Pos p1, b3Pos p2, b3HexColor hex_color, void* context) {
+  Color color;
+  color.r = hex_color & 0xff0000 >> 16;
+  color.g = hex_color & 0x00ff00 >> 8;
+  color.b = hex_color & 0x0000ff >> 0;
+  color.a = 255;
+  DrawLine3D(*(Vector3*)&p1, *(Vector3*)&p2, color);
+}
+
+void draw_transform(b3WorldTransform transform, void* context) {
+  printf("draw_transform\n");
+}
+
+void draw_point(b3Pos p, float size, b3HexColor color, void* context) {
+  printf("draw_point\n");
+}
+
+void draw_sphere(b3Pos p, float radius, b3HexColor color, float alpha, void* context) {
+  printf("draw_sphere\n");
+}
+
+void draw_capsule(b3Pos p1, b3Pos p2, float radius, b3HexColor color, float alpha, void* context) {
+  printf("draw_capsule\n");
+}
+
+void draw_bounds(b3AABB aabb, b3HexColor hex_color, void* context) {
+  Vector3 position = {
+    (aabb.lowerBound.x + aabb.upperBound.x) / 2.0f,
+    (aabb.lowerBound.y + aabb.upperBound.y) / 2.0f,
+    (aabb.lowerBound.z + aabb.upperBound.z) / 2.0f,
+  };
+  f32 width  = aabb.upperBound.x - aabb.lowerBound.x;
+  f32 height = aabb.upperBound.y - aabb.lowerBound.y;
+  f32 length = aabb.upperBound.z - aabb.lowerBound.z;
+
+  Color color;
+  color.r = hex_color & 0xff0000 >> 16;
+  color.g = hex_color & 0x00ff00 >> 8;
+  color.b = hex_color & 0x0000ff >> 0;
+  color.a = 255;
+
+  DrawCubeWires(position, width, height, length, color);
+}
+
+void draw_box(b3Vec3 extents, b3WorldTransform transform, b3HexColor color, void* context) {
+  printf("draw_box\n");
+}
+
 int main(void) {
   InitWindow(1280, 720, "test");
   InitAudioDevice();
@@ -1452,8 +1589,10 @@ int main(void) {
   // TODO uncomment in the release mode
   // SetExitKey(KEY_NULL);
 
+#ifndef RELEASE
   rlImGuiSetup(true);
   imgui_io = igGetIO_Nil();
+#endif
 
   sound_dash          = LoadSound("assets/sfx/dash.wav");
   sound_jump          = LoadSound("assets/sfx/jump.wav");
@@ -1472,58 +1611,33 @@ int main(void) {
   );
   RenderTexture2D depth_texture = create_depth_texture(DEPTH_TEXTURE_RESOLUTION, DEPTH_TEXTURE_RESOLUTION);
 
+  default_material        = LoadMaterialDefault();
+  default_material.shader = mesh_shader;
+
   player_mesh  = GenMeshSphere(0.5f, 32, 32);
-  player_model = LoadModelFromMesh(player_mesh);
-  player_model.materials[0].shader = mesh_shader;
-
   player_spawn_point_mesh  = GenMeshCube(1.0f, 0.2f, 1.0f);
-  player_spawn_point_model = LoadModelFromMesh(player_spawn_point_mesh);
-  player_spawn_point_model.materials[0].shader = mesh_shader;
-
   pebble_mesh  = GenMeshSphere(0.25f, 32, 32);
-  pebble_model = LoadModelFromMesh(player_mesh);
-
   enemy_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
-  enemy_model = LoadModelFromMesh(enemy_mesh);
-  enemy_model.materials[0].shader = mesh_shader;
-
   turret_body_mesh  = GenMeshSphere(0.5f, 32, 32);
-  turret_body_model = LoadModelFromMesh(turret_body_mesh);
-  turret_body_model.materials[0].shader = mesh_shader;
   turret_gun_mesh   = GenMeshCylinder(0.1f, 1.0f, 32);
-  turret_material   = LoadMaterialDefault();
-  turret_material.shader = mesh_shader;
-  turret_material.maps[0].color = DARKGRAY;
-
   button_mesh  = GenMeshCube(1.0f, 0.2f, 1.0f);
-  button_model = LoadModelFromMesh(button_mesh);
-  button_model.materials[0].shader = mesh_shader;
-
   key_mesh  = GenMeshCube(0.2f, 0.2f, 0.2f);
-  key_model = LoadModelFromMesh(key_mesh);
-  key_model.materials[0].shader = mesh_shader;
-
   gate_mesh  = GenMeshCube(1.5f, 2.0f, 0.25f);
-  gate_model = LoadModelFromMesh(gate_mesh);
-  gate_model.materials[0].shader = mesh_shader;
-
   cube_mesh  = GenMeshCube(1.0f, 1.0f, 1.0f);
-  cube_model = LoadModelFromMesh(cube_mesh);
-  cube_model.materials[0].shader = mesh_shader;
-  wall_material               = LoadMaterialDefault();
-  wall_material.shader        = mesh_shader;
-  wall_material.maps[0].color = BROWN;
 
   b3WorldDef world_def = b3DefaultWorldDef();
   world_def.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
+  world_def.createDebugShape = create_debug_shape_callback;
+  world_def.destroyDebugShape = destroy_debug_shape_callback;
+
   world_id = b3CreateWorld(&world_def);
 
   camera_init_default(&free_camera);
   camera_init_default(&game_camera);
-  light_camera.position = (Vector3){-3.0f, 8.0f, -3.0f};
-  light_camera.target   = (Vector3){0.0f, 0.0f,   0.0f};
-  light_camera.up       = (Vector3){0.0f, 1.0f,   0.0f};
-  light_camera.fovy     = 20.0f;
+  light_camera.position = (Vector3){-4.0f, 19.5f, 9.5f};//-3.0f, 8.0f, -3.0f};
+  light_camera.target   = (Vector3){1.0f, 3.0f, 3.5f};//0.0f, 0.0f,   0.0f};
+  light_camera.up       = (Vector3){0.0f, 1.0f, 0.0f};
+  light_camera.fovy     = 51.0f;//20.0f;
   light_camera.projection = CAMERA_ORTHOGRAPHIC;
 
   // floor
@@ -1544,7 +1658,7 @@ int main(void) {
 
   player_spawn();
 
-  memcpy(level_name, "./levels/level_1.level", 22);
+  memcpy(level_name, "./levels/level_2.level", 22);
   level_load();
 
   // defaul level setup
@@ -1569,6 +1683,7 @@ int main(void) {
 
     if (!game_paused) b3World_Step(world_id, dt, 4);
 
+#ifndef RELEASE
     if (IsKeyPressed(KEY_F1)) {
       game_mode = GAME_MODE_EDITOR;
     }
@@ -1606,8 +1721,13 @@ int main(void) {
         }
       }
     }
+#endif
 
+#ifndef RELEASE
     if (!imgui_wants_to_handle_events() && game_mode == GAME_MODE_GAME) {
+#else
+    if (true) {
+#endif
       input_slam_key_pressed          = IsKeyPressed(KEY_SPACE) ||
                                         IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
       input_gravity_key_pressed       = IsKeyPressed(KEY_Q);
@@ -1720,9 +1840,31 @@ int main(void) {
       rlSetUniform(shadow_map_loc, &texture_slot, SHADER_UNIFORM_INT, 1);
 
       BeginMode3D(camera);
-        draw_scene();
+        if (rendering_mode & RENDERING_MODE_NORMAL) {
+          draw_scene();
+        }
+
+#ifndef RELEASE
+        if (rendering_mode & RENDERING_MODE_PHYSICS_DEBUG) {
+          b3DebugDraw debug_draw = b3DefaultDebugDraw();
+          debug_draw.DrawShapeFcn     = debug_draw_shape;
+          debug_draw.DrawSegmentFcn   = draw_segment;
+          debug_draw.DrawTransformFcn = draw_transform;
+          debug_draw.DrawPointFcn     = draw_point;
+          debug_draw.DrawSphereFcn    = draw_sphere;
+          debug_draw.DrawCapsuleFcn   = draw_capsule;
+          debug_draw.DrawBoundsFcn    = draw_bounds;
+          debug_draw.DrawBoxFcn       = draw_box;
+          debug_draw.drawShapes       = true;
+          debug_draw.drawBounds       = true;
+          debug_draw.drawJoints       = true;
+          debug_draw.drawJointExtras  = true;
+          b3World_Draw(world_id, &debug_draw, B3_DEFAULT_MASK_BITS);
+        }
+#endif
       EndMode3D();
 
+#ifndef RELEASE
       f32 gamepad_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
       f32 gamepad_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
 
@@ -1750,6 +1892,28 @@ int main(void) {
         rlImGuiBegin();
           bool open = true;
           igBegin("Editor window", &open, 0);
+
+          bool rmn = rendering_mode & RENDERING_MODE_NORMAL;
+          if (igCheckbox("Rendring NORMAL", &rmn)) {
+            if (rmn) {
+              rendering_mode |= RENDERING_MODE_NORMAL;
+            } else {
+              rendering_mode &= ~RENDERING_MODE_NORMAL;
+            }
+          }
+          bool rmpd = rendering_mode & RENDERING_MODE_PHYSICS_DEBUG;
+          if (igCheckbox("Rendring PHYSICS_DEBUG", &rmpd)) {
+            if (rmpd) {
+              rendering_mode |= RENDERING_MODE_PHYSICS_DEBUG;
+            } else {
+              rendering_mode &= ~RENDERING_MODE_PHYSICS_DEBUG;
+            }
+          }
+
+          igDragFloat3("light_position", (f32*)&light_camera.position, 0.5f, -100.0f, 100.0f, NULL, 0);
+          igDragFloat3("light_target", (f32*)&light_camera.target, 0.5f, -100.0f, 100.0f, NULL, 0);
+          igDragFloat("light_fov", (f32*)&light_camera.fovy, 0.5f, -100.0f, 100.0f, NULL, 0);
+
           igInputText("Level name", level_name, ARRAY_LEN(level_name), 0, NULL, NULL);
 
           if (igButton("Save level", (ImVec2_c){0})) {
@@ -1761,7 +1925,7 @@ int main(void) {
           }
 
          if (igButton("Add wall", (ImVec2_c){0})) {
-            wall_spawn((b3Vec3){0.0f,  1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, BROWN);
+            wall_spawn((b3Vec3){0.0f,  1.0f, 0.0f}, b3Quat_identity, (Vector3){1.0f, 1.0f, 1.0f}, BROWN);
           }
           if (igButton("Add enemy", (ImVec2_c){0})) {
             enemy_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, (Vector3){1.0f, 1.0f, 1.0f}, (Color){200, 93, 82, 255});
@@ -1782,13 +1946,16 @@ int main(void) {
             key_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, GOLD);
           }
           if (igButton("Add gate", (ImVec2_c){0})) {
-            gate_spawn((b3Vec3){0.0f, 1.0f, 0.0f}, b3Quat_identity, GOLD);
+            gate_spawn((b3Vec3){0.0f, 1.5f, 0.0f}, b3Quat_identity, GOLD);
           }
 
           if (selected_object) {
             switch (selected_object->type) {
               case OBJECT_TYPE_NONE: break;
               case OBJECT_TYPE_PLAYER: {
+                igDragFloat3("player_camera_offset",
+                             (f32*)&player_camera_offset,
+                             0.5f, -100.0f, 100.0f, NULL, 0);
                 IMGUI_DRAG_FLOAT(player_speed, 0.0f, 1000.0f);
                 IMGUI_DRAG_FLOAT(player_friction, 0.0f, 30.0f);
                 IMGUI_DRAG_FLOAT(player_gravity_shoot_strength, 50.0f, 200.0f);
@@ -1827,8 +1994,11 @@ int main(void) {
                   b3Body_SetTransform(selected_object->body_id, position,
                                       b3Body_GetRotation(selected_object->body_id));
                   if (selected_object->type == OBJECT_TYPE_GATE) {
-                    b3Body_SetTransform(selected_object->ground_id, b3Sub(position, (b3Vec3){0.0f, 1.0f, 0.0f}),
-                                        b3Body_GetRotation(selected_object->body_id));
+                    b3Quat rotation = b3Body_GetRotation(selected_object->body_id);
+                    b3Vec3 axis_neg_x = b3RotateVector(rotation, (b3Vec3){-1.0f, 1.0f, 0.0f});
+                    b3Vec3 ground_position = b3Add(position, axis_neg_x);
+                    ground_position.y -= 1.0f;
+                    b3Body_SetTransform(selected_object->ground_id, ground_position, rotation);
                   }
                 }
                 if (selected_object->type == OBJECT_TYPE_WALL) {
@@ -1839,16 +2009,16 @@ int main(void) {
                     b3Shape_SetHull(selected_object->shape_id, &box.base);
                   }
                 }
-                if (igDragFloat3("rotation", (f32*)&selected_object->rotation, 0.1f, -100.0f, 100.0f, NULL, 0)) {
-                  b3Quat qx = b3MakeQuatFromAxisAngle((b3Vec3){1.0f, 0.0f, 0.0f}, selected_object->rotation.x);
-                  b3Quat qy = b3MakeQuatFromAxisAngle((b3Vec3){0.0f, 1.0f, 0.0f}, selected_object->rotation.y);
-                  b3Quat qz = b3MakeQuatFromAxisAngle((b3Vec3){0.0f, 0.0f, 1.0f}, selected_object->rotation.z);
-                  b3Quat q = b3MulQuat(qx, b3MulQuat(qy, qz));
-                  b3Body_SetTransform(selected_object->body_id, position, q);
+                b3Quat rotation = b3Body_GetRotation(selected_object->body_id);
+                if (igDragFloat4("rotation", (f32*)&rotation , 0.1f, -100.0f, 100.0f, NULL, 0)) {
+                  rotation = b3NormalizeQuat(rotation);
+                  b3Body_SetTransform(selected_object->body_id, position, rotation);
                   if (selected_object->type == OBJECT_TYPE_GATE) {
-                    b3Body_SetTransform(selected_object->ground_id,
-                                        b3Sub(position, (b3Vec3){0.0f, 1.0f, 0.0f}),
-                                        q);
+
+                    b3Vec3 axis_neg_x = b3RotateVector(rotation, (b3Vec3){-1.0f, 1.0f, 0.0f});
+                    b3Vec3 ground_position = b3Add(position, axis_neg_x);
+                    ground_position.y -= 1.0f;
+                    b3Body_SetTransform(selected_object->ground_id, ground_position, rotation);
                   }
                 }
                 IMGUI_EDIT_COLOR(selected_object->color);
@@ -1868,9 +2038,12 @@ int main(void) {
           igEnd();
         rlImGuiEnd();
       }
+#endif
     EndDrawing();
   }
+#ifndef RELEASE
   rlImGuiShutdown();
+#endif
   CloseAudioDevice();
   CloseWindow();
 
