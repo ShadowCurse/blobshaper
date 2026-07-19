@@ -1,4 +1,5 @@
 zig cc \
+  -DRELEASE \
   game.c \
   -o game \
   -I$RAYLIB_INCLUDE_PATH \

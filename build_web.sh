@@ -1,7 +1,9 @@
 mkdir -p web
+cp index.html web
 cd web
 
 emcc \
+  -DRELEASE \
   -Os \
   -Wall \
   -I.. \
@@ -12,7 +14,6 @@ emcc \
   -I../box3d/build_web/src \
   -s USE_GLFW=3 \
   -s ASYNCIFY \
-  --shell-file ../raylib/src/shell.html \
   -DPLATFORM_WEB \
   -s MAX_WEBGL_VERSION=2 \
   ../game.c \
@@ -20,4 +21,5 @@ emcc \
   ../box3d/build_web/src/libbox3d.a \
   -sFORCE_FILESYSTEM=1 \
   --embed-file ../shaders@/shaders \
-  -o game.html \
+  --embed-file ../levels@/levels \
+  -o game.js
